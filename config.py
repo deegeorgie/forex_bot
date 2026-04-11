@@ -1,0 +1,2 @@
+SYMBOL = "EURUSD"
+LOT = 0.1
