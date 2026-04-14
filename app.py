@@ -1,43 +1,84 @@
-import streamlit as st
-import MetaTrader5 as mt5
-from mt5_connector import connect, place_order
-from data import get_data
-from strategy import compute_indicators, generate_signal
-import config
-import plotly.graph_objects as go
+﻿import streamlit as st
+import hashlib
+import json
 
-st.title("Forex Algo Trading Dashboard")
+# Simple credentials (you can also load from a file)
+VALID_CREDENTIALS = {
+    'admin': hashlib.sha256('admin123'.encode()).hexdigest(),
+    'user': hashlib.sha256('user123'.encode()).hexdigest(),
+    'deebodiong': hashlib.sha256('jhlfd1974'.encode()).hexdigest()
+}
 
-connect()
+# Initialize session state
+if 'authenticated' not in st.session_state:
+    st.session_state.authenticated = False
+    st.session_state.username = None
 
-symbol = st.text_input("Symbol", config.SYMBOL)
-lot = st.slider("Lot size", 0.01, 1.0, config.LOT)
-auto_trade = st.checkbox("Enable Auto Trading")
+# Configure the page
+st.set_page_config(
+    page_title="Forex Algo Trading Bot",
+    page_icon="📈",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-df = get_data(symbol)
-df = compute_indicators(df)
+# Login form
+if not st.session_state.authenticated:
+    st.title("🏠 Forex Trading Bot - Login")
+    st.markdown("---")
+    
+    with st.form("login_form"):
+        username = st.text_input("Username")
+        password = st.text_input("Password", type="password")
+        submit = st.form_submit_button("Login")
+        
+        if submit:
+            password_hash = hashlib.sha256(password.encode()).hexdigest()
+            if username in VALID_CREDENTIALS and VALID_CREDENTIALS[username] == password_hash:
+                st.session_state.authenticated = True
+                st.session_state.username = username
+                st.success(f"Welcome {username}! Refreshing...")
+                st.rerun()
+            else:
+                st.error("Invalid username or password")
+else:
+    # Logout button in sidebar
+    with st.sidebar:
+        if st.button("Logout"):
+            st.session_state.authenticated = False
+            st.session_state.username = None
+            st.success("Logged out successfully!")
+            st.rerun()
+    
+    st.title("🏠 Forex Algo Trading Dashboard")
+    st.markdown(f"Welcome **{st.session_state.username}**")
+    st.markdown("---")
 
-signal = generate_signal(df)
+    st.markdown("""
+    # Welcome to Your Forex Trading Bot
 
-st.subheader(f"Signal: {signal}")
+    This is the main dashboard for your algorithmic forex trading system.
 
-fig = go.Figure()
-fig.add_trace(go.Scatter(x=df['time'], y=df['close'], name="Price"))
-fig.add_trace(go.Scatter(x=df['time'], y=df['SMA_50'], name="SMA 50"))
-fig.add_trace(go.Scatter(x=df['time'], y=df['SMA_200'], name="SMA 200"))
+    ## 📊 Available Features
 
-st.plotly_chart(fig)
+    - **Trading Dashboard**: Real-time trading interface with charts and signals
+    - **Backtesting**: Test your strategies on historical data
+    - **Dictionary**: Learn trading terms and concepts
+    - **Settings**: Configure your trading parameters
 
-if st.button("Buy"):
-    place_order(symbol, lot, mt5.ORDER_TYPE_BUY)
+    ## 🚀 Getting Started
 
-if st.button("Sell"):
-    place_order(symbol, lot, mt5.ORDER_TYPE_SELL)
+    Use the sidebar to navigate between different sections of the application.
 
-if auto_trade:
-    if signal == "BUY":
-        place_order(symbol, lot, mt5.ORDER_TYPE_BUY)
-        st.success("BUY order executed")
-    elif signal == "SELL":
-        place_order(symbol, lot, mt5.ORDER_TYPE_SELL)
-        st.warning("SELL order executed")
+    **Note**: Make sure MetaTrader 5 is running and properly configured before using the trading features.
+    """)
+
+    # Quick status check
+    st.subheader("🔗 Connection Status")
+    try:
+        from mt5_connector import connect
+        connect()
+        st.success("✅ MetaTrader 5 connection successful")
+    except Exception as e:
+        st.error(f"❌ MetaTrader 5 connection failed: {e}")
+        st.info("💡 Check your MT5 credentials in the Settings page")

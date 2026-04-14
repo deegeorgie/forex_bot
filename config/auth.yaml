@@ -1,0 +1,19 @@
+credentials:
+  usernames:
+    admin:
+      email: admin@example.com
+      name: Admin User
+      password: $2b$12$tF7ft.MqAD9Q9H7v.OwBy.uFJfqVufxP44dx8tyFbct.ltaoFqo3m
+    user:
+      email: user@example.com
+      name: Regular User
+      password: $2b$12$QBVJghNd4z0CUsFSm92y.OWhD5wHevzpPzhE7pfnvMahFauPnddim
+
+cookie:
+  expiry_days: 30
+  key: forex_bot_signature_key_2024
+  name: forex_bot_auth
+
+preauthorized:
+  emails:
+    - admin@example.com
