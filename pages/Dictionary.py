@@ -73,6 +73,33 @@ TECHNICAL_TERMS = {
         "formula": "Lot Size = (Account Balance × Risk Percentage) / (Stop Loss Pips × 10000)",
         "usage": "Ensures each trade risks the same percentage of account equity, automatically reducing position size as account grows or shrinks."
     },
+    "Drawdown": {
+        "definition": "The reduction in account equity from a prior peak to a trough, expressed as a percentage.",
+        "formula": "Drawdown = (Peak Equity - Current Equity) / Peak Equity",
+        "usage": "Measures how much capital has been lost relative to the highest account value, helping manage risk and stop trading when losses exceed limits."
+    },
+    "Margin Level": {
+        "definition": "The ratio of equity to used margin expressed as a percentage.",
+        "formula": "Margin Level = (Equity / Used Margin) × 100",
+        "usage": "Indicates account health for leveraged trading; low values can trigger margin calls or stop-outs."
+    },
+    "Free Margin": {
+        "definition": "The amount of equity available to open new positions after accounting for used margin.",
+        "formula": "Free Margin = Equity - Used Margin",
+        "usage": "Shows how much capital is available for additional trades or to absorb adverse price moves."
+    },
+    "Open P/L": {
+        "definition": "The unrealized profit or loss of all currently open positions.",
+        "usage": "Helps monitor current exposure and decide whether to hold, reduce, or close active trades."
+    },
+    "Worst Open Loss": {
+        "definition": "The largest unrealized loss among the currently open positions.",
+        "usage": "Highlights the most at-risk trade so you can manage or close the position before losses get larger."
+    },
+    "Auto-close Threshold": {
+        "definition": "A configured loss percentage at which an open position is automatically closed to limit drawdown.",
+        "usage": "Automatically exits losing trades before they become larger losses, enforcing discipline and protecting capital."
+    },
     "Sharpe Ratio": {
         "definition": "A measure of risk-adjusted return that indicates the excess return per unit of risk taken.",
         "formula": "Sharpe Ratio = (Portfolio Return - Risk-Free Rate) / Portfolio Standard Deviation",
@@ -82,20 +109,6 @@ TECHNICAL_TERMS = {
         "definition": "The ratio of gross profit to gross loss over a period of time.",
         "formula": "Profit Factor = Total Profits / Total Losses",
         "usage": "Values above 1.5 indicate profitable strategies. Higher values suggest better risk-reward ratios."
-    },
-    "Volatility": {
-        "definition": "A statistical measure of the dispersion of returns for a given security or market index.",
-        "usage": "Higher volatility means larger price swings and potentially higher risk/reward."
-    },
-    "Machine Learning Model": {
-        "definition": "An algorithm trained on historical data to make predictions about future price movements.",
-        "usage": "Combines multiple indicators to generate more sophisticated trading signals."
-    },
-    "Random Forest": {
-        "definition": "An ensemble learning method that constructs multiple decision trees and merges their results.",
-        "usage": "Reduces overfitting and improves prediction accuracy compared to single decision trees."
-    }
-        "usage": "Measures risk and portfolio performance."
     },
     "Volatility": {
         "definition": "A statistical measure of the dispersion of returns for a given security or market index.",

@@ -10,6 +10,10 @@ import os
 
 logging.basicConfig(level=logging.INFO)
 
+ML_MODEL = None
+SCALER = None
+
+
 def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     """Compute technical indicators with configurable parameters."""
     try:
@@ -114,11 +118,15 @@ def train_ml_model(df: pd.DataFrame):
 
 def load_ml_model():
     """Load trained ML model."""
+    global ML_MODEL, SCALER
     try:
+        if ML_MODEL is not None and SCALER is not None:
+            return ML_MODEL, SCALER
+
         if os.path.exists('ml_model.pkl') and os.path.exists('scaler.pkl'):
-            model = joblib.load('ml_model.pkl')
-            scaler = joblib.load('scaler.pkl')
-            return model, scaler
+            ML_MODEL = joblib.load('ml_model.pkl')
+            SCALER = joblib.load('scaler.pkl')
+            return ML_MODEL, SCALER
         else:
             logging.info("No trained model found")
             return None, None
@@ -126,70 +134,130 @@ def load_ml_model():
         logging.error(f"Failed to load ML model: {e}")
         return None, None
 
-def generate_signal(df: pd.DataFrame, use_ml: bool = False) -> str:
-    """Generate trading signal using technical analysis or ML."""
+def generate_signals(df: pd.DataFrame, use_ml: bool = False) -> pd.Series:
+    """Generate a signal series for the DataFrame using technical analysis or ML."""
     try:
-        last = df.iloc[-1]
+        if df.empty:
+            return pd.Series(dtype=str)
+
+        def technical_signal(row):
+            try:
+                return generate_technical_signal(row)
+            except Exception:
+                return "HOLD"
 
         if use_ml:
-            # Use ML model
             model, scaler = load_ml_model()
             if model and scaler:
                 features = ['SMA_50', 'SMA_200', 'RSI', 'MACD', 'MACD_signal', 'MACD_histogram',
-                           'BB_middle', 'BB_upper', 'BB_lower', 'returns', 'volatility', 'high_low_ratio']
-                X = pd.DataFrame([last[features]])
-                X_scaled = scaler.transform(X)
-                prediction = model.predict(X_scaled)[0]
+                           'BB_middle', 'BB_upper', 'BB_lower', 'returns', 'volatility', 'high_low_ratio',
+                           'ATR', 'momentum']
+                if not all(feature in df.columns for feature in features):
+                    return df.apply(lambda row: technical_signal(row), axis=1)
 
-                if prediction == 1:
-                    signal = "BUY"
-                elif prediction == -1:
-                    signal = "SELL"
-                else:
-                    signal = "HOLD"
+                valid_rows = df[features].dropna()
+                if valid_rows.empty:
+                    return pd.Series(["HOLD"] * len(df), index=df.index)
+
+                X_scaled = scaler.transform(valid_rows)
+                predictions = model.predict(X_scaled)
+                signals = pd.Series(["BUY" if p == 1 else "SELL" if p == -1 else "HOLD" for p in predictions],
+                                     index=valid_rows.index)
+                output = pd.Series(["HOLD"] * len(df), index=df.index)
+                output.loc[signals.index] = signals
+                return output
             else:
-                # Fallback to technical analysis
-                signal = generate_technical_signal(last)
-        else:
-            # Use technical analysis
-            signal = generate_technical_signal(last)
+                return df.apply(lambda row: technical_signal(row), axis=1)
 
+        return df.apply(lambda row: technical_signal(row), axis=1)
+    except Exception as e:
+        logging.error(f"Failed to generate signals: {e}")
+        return pd.Series(["HOLD"] * len(df), index=df.index)
+
+
+def generate_signal(df: pd.DataFrame, use_ml: bool = False) -> str:
+    """Generate trading signal using technical analysis or ML."""
+    try:
+        if df.empty:
+            return "HOLD"
+
+        signals = generate_signals(df, use_ml=use_ml)
+        signal = signals.iloc[-1] if not signals.empty else "HOLD"
         logging.info(f"Generated signal: {signal}")
         return signal
     except Exception as e:
         logging.error(f"Failed to generate signal: {e}")
         raise
 
+
 def generate_technical_signal(last_row) -> str:
     """Generate signal using technical indicators with strict confirmation."""
     try:
         import config
         
+        def safe_value(key, default=np.nan):
+            return last_row.get(key, default)
+
         # MACD crossover signals
-        macd_bullish = last_row['MACD'] > last_row['MACD_signal']
-        macd_bearish = last_row['MACD'] < last_row['MACD_signal']
-        macd_histogram_positive = last_row['MACD_histogram'] > 0
-        macd_histogram_negative = last_row['MACD_histogram'] < 0
+        macd = safe_value('MACD')
+        macd_signal = safe_value('MACD_signal')
+        macd_histogram = safe_value('MACD_histogram')
+        macd_bullish = False
+        macd_bearish = False
+        macd_histogram_positive = False
+        macd_histogram_negative = False
+        if not np.isnan(macd) and not np.isnan(macd_signal):
+            macd_bullish = macd > macd_signal
+            macd_bearish = macd < macd_signal
+        if not np.isnan(macd_histogram):
+            macd_histogram_positive = macd_histogram > 0
+            macd_histogram_negative = macd_histogram < 0
 
         # Bollinger Bands signals - stricter conditions
-        bb_upper_touch = last_row['close'] >= last_row['BB_upper'] * 0.995  # Closer to upper band
-        bb_lower_touch = last_row['close'] <= last_row['BB_lower'] * 1.005  # Closer to lower band
+        close_price = safe_value('close')
+        bb_upper = safe_value('BB_upper')
+        bb_lower = safe_value('BB_lower')
+        bb_upper_touch = False
+        bb_lower_touch = False
+        if not np.isnan(close_price) and not np.isnan(bb_upper):
+            bb_upper_touch = close_price >= bb_upper * 0.995
+        if not np.isnan(close_price) and not np.isnan(bb_lower):
+            bb_lower_touch = close_price <= bb_lower * 1.005
 
         # RSI conditions with configurable thresholds
-        rsi_oversold = last_row['RSI'] < config.RSI_OVERSOLD
-        rsi_overbought = last_row['RSI'] > config.RSI_OVERBOUGHT
+        rsi = safe_value('RSI')
+        rsi_oversold = False
+        rsi_overbought = False
+        if not np.isnan(rsi):
+            rsi_oversold = rsi < config.RSI_OVERSOLD
+            rsi_overbought = rsi > config.RSI_OVERBOUGHT
 
         # Moving average crossover
-        sma_bullish = last_row['SMA_short'] > last_row['SMA_long']
-        sma_bearish = last_row['SMA_short'] < last_row['SMA_long']
-        sma_separation = abs(last_row['SMA_short'] - last_row['SMA_long']) / last_row['SMA_long'] * 100
+        sma_short = safe_value('SMA_short')
+        sma_long = safe_value('SMA_long')
+        if np.isnan(sma_short):
+            sma_short = safe_value('SMA_50')
+        if np.isnan(sma_long):
+            sma_long = safe_value('SMA_200')
+
+        sma_bullish = False
+        sma_bearish = False
+        sma_separation = 0
+        if not np.isnan(sma_short) and not np.isnan(sma_long) and sma_long != 0:
+            sma_bullish = sma_short > sma_long
+            sma_bearish = sma_short < sma_long
+            sma_separation = abs(sma_short - sma_long) / sma_long * 100
 
         # ATR-based volatility filter (only trade in normal volatility)
-        atr_threshold = last_row['ATR'] * 2 if not np.isnan(last_row['ATR']) else 0.001
+        atr = safe_value('ATR')
+        atr_threshold = atr * 2 if not np.isnan(atr) else 0.001
         
         # Momentum confirmation
-        momentum_bullish = last_row['momentum_direction'] > 0 if 'momentum_direction' in last_row else False
-        momentum_bearish = last_row['momentum_direction'] < 0 if 'momentum_direction' in last_row else False
+        momentum_direction = safe_value('momentum_direction')
+        if np.isnan(momentum_direction):
+            momentum_direction = safe_value('momentum')
+        momentum_bullish = momentum_direction > 0 if not np.isnan(momentum_direction) else False
+        momentum_bearish = momentum_direction < 0 if not np.isnan(momentum_direction) else False
 
         # Count buy signals (require multiple confirmations)
         buy_signals = 0

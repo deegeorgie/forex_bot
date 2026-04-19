@@ -1,5 +1,6 @@
 import streamlit as st
 import MetaTrader5 as mt5
+import config
 from data import get_data
 from strategy import compute_indicators, generate_signal
 from backtest import backtest_strategy
@@ -20,8 +21,8 @@ before using it with real money.
 # Backtesting parameters
 st.sidebar.header("⚙️ Backtesting Parameters")
 
-symbol = st.sidebar.selectbox("Symbol", ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD"],
-                              index=0)
+available_symbols = config.AVAILABLE_SYMBOLS or ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD"]
+symbol = st.sidebar.selectbox("Symbol", available_symbols, index=0)
 
 timeframe_options = {"M1": mt5.TIMEFRAME_M1, "M5": mt5.TIMEFRAME_M5,
                     "M15": mt5.TIMEFRAME_M15, "H1": mt5.TIMEFRAME_H1}
@@ -155,6 +156,10 @@ def run_backtest(symbol, timeframe, start_date, end_date, initial_balance, risk_
             if len(df) < 100:
                 st.error("❌ Not enough data for the selected date range. Try a longer period.")
                 return
+            
+            # Check for large datasets that may be memory intensive
+            if len(df) > 5000:
+                st.warning(f"⚠️ Large dataset ({len(df)} rows) may be memory intensive. Consider shorter date ranges for better performance.")
 
             # Compute indicators
             df = compute_indicators(df)

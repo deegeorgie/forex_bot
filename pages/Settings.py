@@ -1,6 +1,7 @@
 import streamlit as st
 import os
 from dotenv import load_dotenv
+import config
 
 # Load environment variables
 load_dotenv()
@@ -46,9 +47,12 @@ with tab1:
     col1, col2, col3 = st.columns(3)
     
     with col1:
-        symbol = st.selectbox("Default Symbol",
-                             ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD"],
-                             index=["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD"].index(os.getenv("SYMBOL", "EURUSD")))
+        available_symbols = config.AVAILABLE_SYMBOLS or ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD"]
+        symbol = st.selectbox(
+            "Default Symbol",
+            available_symbols,
+            index=available_symbols.index(os.getenv("SYMBOL", "EURUSD")) if os.getenv("SYMBOL", "EURUSD") in available_symbols else 0
+        )
     
     with col2:
         timeframe = st.selectbox("Default Timeframe",

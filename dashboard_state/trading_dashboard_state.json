@@ -1,0 +1,14 @@
+{
+  "auto_refresh": true,
+  "refresh_interval": 10,
+  "enable_auto_close": true,
+  "auto_close_loss_pct": 1.0,
+  "max_drawdown_pct": 10.0,
+  "use_risk_management": false,
+  "paper_trading": false,
+  "auto_trade": true,
+  "use_ml_signals": false,
+  "timeframe": "M15",
+  "lot_size": 0.1,
+  "followed_symbol": "EURUSD"
+}

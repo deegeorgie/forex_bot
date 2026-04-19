@@ -1,0 +1,2 @@
+timestamp,date,time,symbol,signal,lot_size,score,account_balance,account_equity,margin_info
+2026-04-19 05:32:23,2026-04-19,05:32:23,USDGEL,BUY,0.1,5,98970.79,98639.75,"{'margin': 2831.93, 'free_margin': 95807.82, 'margin_level': 3483.128114042367}"

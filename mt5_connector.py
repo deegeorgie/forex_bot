@@ -52,6 +52,43 @@ def get_account_balance() -> float:
         logging.error(f"Failed to get account balance: {e}")
         raise
 
+
+def get_available_symbols() -> list:
+    """Return a sorted list of forex-related MT5 symbols available in the terminal."""
+    try:
+        symbols = mt5.symbols_get()
+        if symbols is None:
+            return []
+
+        forex_currencies = {"AUD", "CAD", "CHF", "EUR", "GBP", "JPY", "NZD", "USD"}
+
+        def is_forex_symbol(symbol_obj):
+            name = getattr(symbol_obj, 'name', '')
+            path = getattr(symbol_obj, 'path', '') or getattr(symbol_obj, 'group', '') or ''
+            if not isinstance(name, str):
+                return False
+
+            if isinstance(path, str) and 'forex' in path.lower():
+                return True
+
+            if len(name) == 6:
+                base = name[:3]
+                quote = name[3:]
+                return base in forex_currencies and quote in forex_currencies
+
+            return False
+
+        filtered = sorted({
+            symbol.name
+            for symbol in symbols
+            if is_forex_symbol(symbol)
+        })
+        return filtered
+    except Exception as e:
+        logging.error(f"Failed to get available symbols: {e}")
+        return []
+
+
 def is_algorithmic_trading_enabled() -> bool:
     """Check if algorithmic trading is enabled in MT5 terminal."""
     try:
@@ -80,7 +117,7 @@ def calculate_lot_size(balance: float, risk_percentage: float, stop_loss_pips: i
         symbol_info = mt5.symbol_info(symbol)
         if symbol_info is None:
             raise Exception(f"Symbol info not available for {symbol}")
-        pip_value = symbol_info.point * 10  # Assuming 5-digit broker
+        pip_value = 10 ** (1 - symbol_info.digits)  # Correct pip value based on symbol digits
         risk_amount = balance * risk_percentage
         lot_size = risk_amount / (stop_loss_pips * pip_value)
         return round(lot_size, 2)
@@ -91,56 +128,90 @@ def calculate_lot_size(balance: float, risk_percentage: float, stop_loss_pips: i
 def place_order(symbol: str, lot: float, order_type: int, stop_loss_pips: Optional[int] = None, take_profit_pips: Optional[int] = None) -> Optional[object]:
     """Place a trade order."""
     try:
-        price = get_price(symbol)[0]
+        tick = mt5.symbol_info_tick(symbol)
+        if tick is None:
+            raise Exception(f"Failed to get tick for {symbol}")
+
         symbol_info = mt5.symbol_info(symbol)
         if symbol_info is None:
             raise Exception(f"Symbol info not available for {symbol}")
 
+        pip_value = 10 ** (1 - symbol_info.digits)  # Correct pip value based on symbol digits
+        price = tick.ask if order_type == mt5.ORDER_TYPE_BUY else tick.bid
+
+        spread = tick.ask - tick.bid
+        if spread > config.MAX_SPREAD_PIPS * pip_value:
+            raise Exception(f"Spread too high for {symbol}: {spread:.8f}")
+
         sl = None
         tp = None
+        min_stop_distance = symbol_info.trade_stops_level * symbol_info.point  # Minimum stop distance in price units
         if stop_loss_pips:
+            sl_distance = stop_loss_pips * pip_value
+            if sl_distance < min_stop_distance:
+                raise Exception(f"Stop loss distance ({sl_distance}) is below minimum allowed ({min_stop_distance})")
             if order_type == mt5.ORDER_TYPE_BUY:
-                sl = price - stop_loss_pips * symbol_info.point * 10
+                sl = price - sl_distance
             else:
-                sl = price + stop_loss_pips * symbol_info.point * 10
+                sl = price + sl_distance
         if take_profit_pips:
+            tp_distance = take_profit_pips * pip_value
+            if tp_distance < min_stop_distance:
+                raise Exception(f"Take profit distance ({tp_distance}) is below minimum allowed ({min_stop_distance})")
             if order_type == mt5.ORDER_TYPE_BUY:
-                tp = price + take_profit_pips * symbol_info.point * 10
+                tp = price + tp_distance
             else:
-                tp = price - take_profit_pips * symbol_info.point * 10
+                tp = price - tp_distance
 
-        # Try different filling modes in order of preference
-        filling_modes = [
-            mt5.ORDER_FILLING_IOC,      # Immediate or Cancel
-            mt5.ORDER_FILLING_FOK,      # Fill or Kill
-            mt5.ORDER_FILLING_RETURN    # Return unfilled portion
-        ]
+        # Create base request without filling mode (most brokers prefer this for market orders)
+        deviation = max(1, int(config.MAX_SLIPPAGE_PIPS / symbol_info.point))
+        request = {
+            "action": mt5.TRADE_ACTION_DEAL,
+            "symbol": symbol,
+            "volume": lot,
+            "type": order_type,
+            "price": price,
+            "sl": sl,
+            "tp": tp,
+            "deviation": deviation,
+            "magic": 123456,
+            "comment": "algo_trade",
+            "type_time": mt5.ORDER_TIME_GTC,
+        }
 
-        result = None
-        for filling_mode in filling_modes:
-            request = {
-                "action": mt5.TRADE_ACTION_DEAL,
-                "symbol": symbol,
-                "volume": lot,
-                "type": order_type,
-                "price": price,
-                "sl": sl,
-                "tp": tp,
-                "deviation": 10,
-                "magic": 123456,
-                "comment": "algo_trade",
-                "type_time": mt5.ORDER_TIME_GTC,
-                "type_filling": filling_mode,
-            }
-
-            result = mt5.order_send(request)
-            if result.retcode == mt5.TRADE_RETCODE_DONE:
-                break  # Success, exit the loop
-            elif "Unsupported filling mode" in str(result.comment):
-                continue  # Try next filling mode
-            else:
-                # Different error, don't retry
-                break
+        # Try basic order first
+        result = mt5.order_send(request)
+        
+        # If basic order fails, try with different filling modes
+        if result.retcode != mt5.TRADE_RETCODE_DONE:
+            filling_modes_to_try = [
+                mt5.ORDER_FILLING_RETURN,  # Most brokers support this
+                mt5.ORDER_FILLING_IOC,     # Immediate or Cancel
+                mt5.ORDER_FILLING_FOK      # Fill or Kill
+            ]
+            
+            for filling_mode in filling_modes_to_try:
+                request_with_filling = {
+                    "action": mt5.TRADE_ACTION_DEAL,
+                    "symbol": symbol,
+                    "volume": lot,
+                    "type": order_type,
+                    "price": price,
+                    "sl": sl,
+                    "tp": tp,
+                    "deviation": deviation,
+                    "magic": 123456,
+                    "comment": "algo_trade",
+                    "type_time": mt5.ORDER_TIME_GTC,
+                    "type_filling": filling_mode,
+                }
+                
+                result = mt5.order_send(request_with_filling)
+                if result.retcode == mt5.TRADE_RETCODE_DONE:
+                    logging.info(f"Order successful with filling mode: {filling_mode}")
+                    break
+                else:
+                    logging.warning(f"Filling mode {filling_mode} failed for {symbol}: {result.comment}")
 
         if result.retcode != mt5.TRADE_RETCODE_DONE:
             raise Exception(f"Order failed: {result.comment}")
@@ -148,4 +219,207 @@ def place_order(symbol: str, lot: float, order_type: int, stop_loss_pips: Option
         return result
     except Exception as e:
         logging.error(f"Failed to place order: {e}")
+        raise
+
+
+def get_open_positions(symbol: Optional[str] = None):
+    """Return a list of open MT5 positions for the specified symbol or all symbols."""
+    try:
+        positions = mt5.positions_get(symbol=symbol) if symbol else mt5.positions_get()
+        if positions is None:
+            return []
+        return list(positions)
+    except Exception as e:
+        logging.error(f"Failed to get open positions: {e}")
+        raise
+
+
+def get_account_margin_info() -> dict:
+    """Return margin information for the connected account."""
+    try:
+        account = mt5.account_info()
+        if account is None:
+            raise Exception("Failed to get account info")
+        return {
+            'margin': account.margin,
+            'free_margin': account.margin_free,
+            'margin_level': account.margin_level,
+        }
+    except Exception as e:
+        logging.error(f"Failed to get account margin info: {e}")
+        raise
+
+
+def check_pnl_constraint(max_pnl_percent: float = 0.75) -> dict:
+    """
+    Check if current Open P/L exceeds the maximum allowed percentage of Free Margin.
+    
+    Args:
+        max_pnl_percent: Maximum allowed P/L as a percentage of Free Margin (default 0.75 = 75%)
+    
+    Returns:
+        dict with:
+            - 'within_limits': bool - whether current P/L is within limits
+            - 'current_pnl': float - current unrealized P/L
+            - 'free_margin': float - current free margin
+            - 'max_allowed_pnl': float - maximum allowed P/L
+            - 'utilization_percent': float - percentage of limit being used
+    """
+    try:
+        positions = get_open_positions()
+        margin_info = get_account_margin_info()
+        
+        current_pnl = sum(position.profit for position in positions) if positions else 0.0
+        free_margin = margin_info['free_margin']
+        max_allowed_pnl = free_margin * max_pnl_percent
+        
+        # Check if we're exceeding limits (considering negative P/L)
+        # We need to check both the absolute value and the actual loss
+        within_limits = abs(current_pnl) <= max_allowed_pnl
+        
+        utilization_percent = (abs(current_pnl) / max_allowed_pnl * 100) if max_allowed_pnl > 0 else 0
+        
+        return {
+            'within_limits': within_limits,
+            'current_pnl': current_pnl,
+            'free_margin': free_margin,
+            'max_allowed_pnl': max_allowed_pnl,
+            'utilization_percent': utilization_percent,
+            'exceeded_by': max(0, abs(current_pnl) - max_allowed_pnl)
+        }
+    except Exception as e:
+        logging.error(f"Failed to check P/L constraint: {e}")
+        raise
+
+
+def can_place_order(estimated_loss: float, max_pnl_percent: float = 0.75) -> dict:
+    """
+    Check if a new order can be placed without violating P/L constraints.
+    
+    Args:
+        estimated_loss: Estimated maximum loss for the new position
+        max_pnl_percent: Maximum allowed P/L as a percentage of Free Margin (default 0.75 = 75%)
+    
+    Returns:
+        dict with:
+            - 'can_place': bool - whether order can be placed
+            - 'current_utilization': float - current P/L utilization percentage
+            - 'projected_utilization': float - projected P/L utilization if order placed
+            - 'reason': str - reason if order cannot be placed
+    """
+    try:
+        positions = get_open_positions()
+        if len(positions) >= config.MAX_OPEN_POSITIONS:
+            return {
+                'can_place': False,
+                'current_utilization': 100,
+                'projected_utilization': 100,
+                'reason': f'Max open positions reached ({len(positions)} >= {config.MAX_OPEN_POSITIONS})'
+            }
+
+        constraint = check_pnl_constraint(max_pnl_percent)
+        
+        if constraint['free_margin'] <= 0:
+            return {
+                'can_place': False,
+                'current_utilization': constraint['utilization_percent'],
+                'projected_utilization': 100,
+                'reason': 'Free margin is zero or negative. Account may be in margin call.'
+            }
+        
+        current_pnl = constraint['current_pnl']
+        max_allowed_pnl = constraint['max_allowed_pnl']
+        projected_pnl = abs(current_pnl) + estimated_loss
+        projected_utilization = (projected_pnl / max_allowed_pnl * 100) if max_allowed_pnl > 0 else 100
+        
+        can_place = projected_pnl <= max_allowed_pnl
+        
+        reason = ""
+        if not can_place:
+            reason = f"Placing this order would exceed P/L limit. Current P/L: ${current_pnl:.2f}, " \
+                     f"Estimated new loss: ${estimated_loss:.2f}, " \
+                     f"Max allowed: ${max_allowed_pnl:.2f}"
+        
+        return {
+            'can_place': can_place,
+            'current_utilization': constraint['utilization_percent'],
+            'projected_utilization': projected_utilization,
+            'reason': reason
+        }
+    except Exception as e:
+        logging.error(f"Failed to check if order can be placed: {e}")
+        return {
+            'can_place': False,
+            'current_utilization': 0,
+            'projected_utilization': 0,
+            'reason': f"Error checking order constraints: {e}"
+        }
+
+
+def close_position(position, deviation: int = 10):
+    """Close an open position using the current market price."""
+    try:
+        symbol = position.symbol
+        volume = position.volume
+        order_type = mt5.ORDER_TYPE_SELL if position.type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY
+        tick = mt5.symbol_info_tick(symbol)
+        if tick is None:
+            raise Exception(f"Failed to get tick for {symbol}")
+
+        price = tick.bid if order_type == mt5.ORDER_TYPE_SELL else tick.ask
+        
+        # Create base request without filling mode
+        request = {
+            'action': mt5.TRADE_ACTION_DEAL,
+            'symbol': symbol,
+            'volume': volume,
+            'type': order_type,
+            'position': position.ticket,
+            'price': price,
+            'deviation': deviation,
+            'magic': 123456,
+            'comment': 'auto_close',
+            'type_time': mt5.ORDER_TIME_GTC,
+        }
+        
+        # Try basic close first
+        result = mt5.order_send(request)
+        
+        # If basic close fails, try with different filling modes
+        if result.retcode != mt5.TRADE_RETCODE_DONE:
+            filling_modes_to_try = [
+                mt5.ORDER_FILLING_RETURN,  # Most brokers support this
+                mt5.ORDER_FILLING_IOC,     # Immediate or Cancel
+                mt5.ORDER_FILLING_FOK      # Fill or Kill
+            ]
+            
+            for filling_mode in filling_modes_to_try:
+                request_with_filling = {
+                    'action': mt5.TRADE_ACTION_DEAL,
+                    'symbol': symbol,
+                    'volume': volume,
+                    'type': order_type,
+                    'position': position.ticket,
+                    'price': price,
+                    'deviation': deviation,
+                    'magic': 123456,
+                    'comment': 'auto_close',
+                    'type_time': mt5.ORDER_TIME_GTC,
+                    'type_filling': filling_mode,
+                }
+                
+                result = mt5.order_send(request_with_filling)
+                if result.retcode == mt5.TRADE_RETCODE_DONE:
+                    logging.info(f"Position closed with filling mode: {filling_mode}")
+                    break
+                else:
+                    logging.warning(f"Filling mode {filling_mode} failed for close: {result.comment}")
+        
+        if result.retcode != mt5.TRADE_RETCODE_DONE:
+            raise Exception(f"Close failed: {result.comment}")
+
+        logging.info(f"Position closed: ticket {position.ticket}, symbol {symbol}, volume {volume}")
+        return result
+    except Exception as e:
+        logging.error(f"Failed to close position: {e}")
         raise
