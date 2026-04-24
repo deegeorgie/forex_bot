@@ -13,9 +13,22 @@ AUTO_CLOSE_MAX_LOSS_PERCENTAGE = float(os.getenv("AUTO_CLOSE_MAX_LOSS_PERCENTAGE
 TIMEFRAME = os.getenv("TIMEFRAME", "M15")  # Default to M15 for lower noise and stronger signals
 AVAILABLE_SYMBOLS = [
     symbol.strip().upper()
-    for symbol in os.getenv("AVAILABLE_SYMBOLS", "EURUSD,GBPUSD,USDJPY,AUDUSD,USDCAD").split(",")
+    for symbol in os.getenv("AVAILABLE_SYMBOLS", "EURUSD,GBPUSD,USDJPY").split(",")
     if symbol.strip()
 ]
+
+# Symbol-to-Session Mapping for Session-Aware Trading
+# Maps each symbol to the trading sessions when it has optimal liquidity/spreads
+SYMBOL_SESSION_MAP = {
+    "EURUSD": ["london", "overlap"],  # Best liquidity during London and London/NY overlap
+    "GBPUSD": ["london", "overlap"],  # Best liquidity during London and London/NY overlap
+    "USDJPY": ["asian", "london", "overlap"],  # Active across all sessions
+}
+
+# Enable session-aware trading (only trade symbols when they're in active sessions)
+# TEMPORARY: Disabled to allow existing 40 positions to continue trading
+# TODO: Re-enable after reducing to ~15-20 positions
+ENABLE_SESSION_AWARE_TRADING = os.getenv("ENABLE_SESSION_AWARE_TRADING", "false").lower() == "true"
 
 # Strategy Configuration - Adjustable Parameters
 RSI_PERIOD = int(os.getenv("RSI_PERIOD", "14"))
@@ -31,7 +44,9 @@ SMA_LONG = int(os.getenv("SMA_LONG", "200"))
 SIGNAL_CONFIRMATION_COUNT = int(os.getenv("SIGNAL_CONFIRMATION_COUNT", "2"))  # Require N signals to align
 
 # Risk and execution controls
-MAX_OPEN_POSITIONS = int(os.getenv("MAX_OPEN_POSITIONS", "3"))
+# TEMPORARY: Increased from 50 to 60 to accommodate existing 40 positions
+# TODO: Reduce back to 50 after closing ~20 positions
+MAX_OPEN_POSITIONS = int(os.getenv("MAX_OPEN_POSITIONS", "60"))
 MAX_SPREAD_PIPS = float(os.getenv("MAX_SPREAD_PIPS", "3.0"))
 MAX_SLIPPAGE_PIPS = float(os.getenv("MAX_SLIPPAGE_PIPS", "3.0"))
 BACKTEST_SPREAD_PIPS = float(os.getenv("BACKTEST_SPREAD_PIPS", "0.5"))

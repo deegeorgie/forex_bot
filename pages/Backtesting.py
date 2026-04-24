@@ -18,28 +18,78 @@ on historical data. This helps you understand the strategy's strengths and weakn
 before using it with real money.
 """)
 
+# Initialize session state for backtesting parameters
+available_symbols = config.AVAILABLE_SYMBOLS or ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD"]
+if 'backtest_symbol' not in st.session_state:
+    st.session_state.backtest_symbol = available_symbols[0]
+if 'backtest_timeframe' not in st.session_state:
+    st.session_state.backtest_timeframe = 'M15'
+if 'backtest_start_date' not in st.session_state:
+    st.session_state.backtest_start_date = pd.Timestamp.now() - pd.Timedelta(days=30)
+if 'backtest_end_date' not in st.session_state:
+    st.session_state.backtest_end_date = pd.Timestamp.now()
+if 'backtest_initial_balance' not in st.session_state:
+    st.session_state.backtest_initial_balance = 10000
+if 'backtest_risk_per_trade' not in st.session_state:
+    st.session_state.backtest_risk_per_trade = 1.0
+if 'backtest_use_ml' not in st.session_state:
+    st.session_state.backtest_use_ml = False
+
 # Backtesting parameters
 st.sidebar.header("⚙️ Backtesting Parameters")
 
-available_symbols = config.AVAILABLE_SYMBOLS or ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD"]
-symbol = st.sidebar.selectbox("Symbol", available_symbols, index=0)
+symbol = st.sidebar.selectbox(
+    "Symbol", 
+    available_symbols, 
+    index=available_symbols.index(st.session_state.backtest_symbol) if st.session_state.backtest_symbol in available_symbols else 0,
+    key='backtest_symbol'
+)
 
 timeframe_options = {"M1": mt5.TIMEFRAME_M1, "M5": mt5.TIMEFRAME_M5,
                     "M15": mt5.TIMEFRAME_M15, "H1": mt5.TIMEFRAME_H1}
-timeframe_label = st.sidebar.selectbox("Timeframe", list(timeframe_options.keys()), index=1)
+timeframe_label = st.sidebar.selectbox(
+    "Timeframe", 
+    list(timeframe_options.keys()), 
+    index=list(timeframe_options.keys()).index(st.session_state.backtest_timeframe) if st.session_state.backtest_timeframe in timeframe_options else 1,
+    key='backtest_timeframe'
+)
 timeframe = timeframe_options[timeframe_label]
 
 # Date range selection
 st.sidebar.subheader("📅 Date Range")
-start_date = st.sidebar.date_input("Start Date", value=pd.Timestamp.now() - pd.Timedelta(days=30))
-end_date = st.sidebar.date_input("End Date", value=pd.Timestamp.now())
+start_date = st.sidebar.date_input(
+    "Start Date", 
+    value=st.session_state.backtest_start_date,
+    key='backtest_start_date'
+)
+end_date = st.sidebar.date_input(
+    "End Date", 
+    value=st.session_state.backtest_end_date,
+    key='backtest_end_date'
+)
 
 # Strategy parameters
 st.sidebar.subheader("🎯 Strategy Settings")
-initial_balance = st.sidebar.number_input("Initial Balance ($)", min_value=1000, value=10000, step=1000)
-risk_per_trade = st.sidebar.slider("Risk per Trade (%)", 0.1, 5.0, 1.0, 0.1)
-use_ml = st.sidebar.checkbox("🤖 Use ML Signals", value=False,
-                              help="Combine technical analysis with machine learning predictions")
+initial_balance = st.sidebar.number_input(
+    "Initial Balance ($)", 
+    min_value=1000, 
+    value=st.session_state.backtest_initial_balance, 
+    step=1000,
+    key='backtest_initial_balance'
+)
+risk_per_trade = st.sidebar.slider(
+    "Risk per Trade (%)", 
+    0.1, 5.0, 
+    st.session_state.backtest_risk_per_trade, 
+    0.1,
+    key='backtest_risk_per_trade'
+)
+use_ml = st.sidebar.checkbox(
+    "🤖 Use ML Signals", 
+    value=st.session_state.backtest_use_ml,
+    help="Combine technical analysis with machine learning predictions",
+    key='backtest_use_ml'
+)
 
 def display_backtest_results(results, symbol, timeframe, start_date, end_date):
     """Display backtest results in a comprehensive format."""

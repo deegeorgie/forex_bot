@@ -9,6 +9,36 @@ load_dotenv()
 st.title("⚙️ Settings & Configuration")
 st.markdown("---")
 
+# Initialize session state for settings (tracks unsaved changes)
+if 'settings_symbol' not in st.session_state:
+    st.session_state.settings_symbol = os.getenv("SYMBOL", "EURUSD")
+if 'settings_timeframe' not in st.session_state:
+    st.session_state.settings_timeframe = os.getenv("TIMEFRAME", "M5")
+if 'settings_lot_size' not in st.session_state:
+    st.session_state.settings_lot_size = float(os.getenv("LOT", "0.1"))
+if 'settings_sma_short' not in st.session_state:
+    st.session_state.settings_sma_short = int(os.getenv("SMA_SHORT", "50"))
+if 'settings_sma_long' not in st.session_state:
+    st.session_state.settings_sma_long = int(os.getenv("SMA_LONG", "200"))
+if 'settings_rsi_period' not in st.session_state:
+    st.session_state.settings_rsi_period = int(os.getenv("RSI_PERIOD", "14"))
+if 'settings_rsi_oversold' not in st.session_state:
+    st.session_state.settings_rsi_oversold = int(os.getenv("RSI_OVERSOLD", "30"))
+if 'settings_rsi_overbought' not in st.session_state:
+    st.session_state.settings_rsi_overbought = int(os.getenv("RSI_OVERBOUGHT", "70"))
+if 'settings_macd_fast' not in st.session_state:
+    st.session_state.settings_macd_fast = int(os.getenv("MACD_FAST", "12"))
+if 'settings_macd_slow' not in st.session_state:
+    st.session_state.settings_macd_slow = int(os.getenv("MACD_SLOW", "26"))
+if 'settings_macd_signal' not in st.session_state:
+    st.session_state.settings_macd_signal = int(os.getenv("MACD_SIGNAL", "9"))
+if 'settings_bb_period' not in st.session_state:
+    st.session_state.settings_bb_period = int(os.getenv("BB_PERIOD", "20"))
+if 'settings_bb_std' not in st.session_state:
+    st.session_state.settings_bb_std = float(os.getenv("BB_STD_DEV", "2.0"))
+if 'settings_signal_confirmation' not in st.session_state:
+    st.session_state.settings_signal_confirmation = int(os.getenv("SIGNAL_CONFIRMATION_COUNT", "2"))
+
 class SettingsManager:
     """Manage configuration settings."""
     
@@ -51,16 +81,26 @@ with tab1:
         symbol = st.selectbox(
             "Default Symbol",
             available_symbols,
-            index=available_symbols.index(os.getenv("SYMBOL", "EURUSD")) if os.getenv("SYMBOL", "EURUSD") in available_symbols else 0
+            index=available_symbols.index(st.session_state.settings_symbol) if st.session_state.settings_symbol in available_symbols else 0,
+            key='settings_symbol'
         )
     
     with col2:
-        timeframe = st.selectbox("Default Timeframe",
-                                ["M1", "M5", "M15", "H1", "D1"],
-                                index=["M1", "M5", "M15", "H1", "D1"].index(os.getenv("TIMEFRAME", "M5")))
+        timeframe = st.selectbox(
+            "Default Timeframe",
+            ["M1", "M5", "M15", "H1", "D1"],
+            index=["M1", "M5", "M15", "H1", "D1"].index(st.session_state.settings_timeframe) if st.session_state.settings_timeframe in ["M1", "M5", "M15", "H1", "D1"] else 1,
+            key='settings_timeframe'
+        )
     
     with col3:
-        lot_size = st.slider("Default Lot Size", 0.01, 1.0, float(os.getenv("LOT", "0.1")), 0.01)
+        lot_size = st.slider(
+            "Default Lot Size", 
+            0.01, 1.0, 
+            st.session_state.settings_lot_size, 
+            0.01,
+            key='settings_lot_size'
+        )
 
 with tab2:
     st.header("🎯 Strategy Parameters")
@@ -70,38 +110,104 @@ with tab2:
     
     with col1:
         st.subheader("📈 Moving Averages")
-        sma_short = st.slider("Short SMA Period", 10, 100, int(os.getenv("SMA_SHORT", "50")), 5,
-                             help="Faster moving average for trend detection")
-        sma_long = st.slider("Long SMA Period", 100, 300, int(os.getenv("SMA_LONG", "200")), 10,
-                            help="Slower moving average for long-term trend")
+        sma_short = st.slider(
+            "Short SMA Period", 
+            10, 100, 
+            st.session_state.settings_sma_short, 
+            5,
+            help="Faster moving average for trend detection",
+            key='settings_sma_short'
+        )
+        sma_long = st.slider(
+            "Long SMA Period", 
+            100, 300, 
+            st.session_state.settings_sma_long, 
+            10,
+            help="Slower moving average for long-term trend",
+            key='settings_sma_long'
+        )
     
     with col2:
         st.subheader("📊 RSI Settings")
-        rsi_period = st.slider("RSI Period", 5, 30, int(os.getenv("RSI_PERIOD", "14")), 1)
-        rsi_oversold = st.slider("RSI Oversold Level", 10, 40, int(os.getenv("RSI_OVERSOLD", "30")), 1,
-                                help="Values below this = potential buy signal")
-        rsi_overbought = st.slider("RSI Overbought Level", 60, 90, int(os.getenv("RSI_OVERBOUGHT", "70")), 1,
-                                  help="Values above this = potential sell signal")
+        rsi_period = st.slider(
+            "RSI Period", 
+            5, 30, 
+            st.session_state.settings_rsi_period, 
+            1,
+            key='settings_rsi_period'
+        )
+        rsi_oversold = st.slider(
+            "RSI Oversold Level", 
+            10, 40, 
+            st.session_state.settings_rsi_oversold, 
+            1,
+            help="Values below this = potential buy signal",
+            key='settings_rsi_oversold'
+        )
+        rsi_overbought = st.slider(
+            "RSI Overbought Level", 
+            60, 90, 
+            st.session_state.settings_rsi_overbought, 
+            1,
+            help="Values above this = potential sell signal",
+            key='settings_rsi_overbought'
+        )
     
     col1, col2 = st.columns(2)
     
     with col1:
         st.subheader("🎵 MACD Settings")
-        macd_fast = st.slider("MACD Fast Period", 5, 20, int(os.getenv("MACD_FAST", "12")), 1)
-        macd_slow = st.slider("MACD Slow Period", 20, 50, int(os.getenv("MACD_SLOW", "26")), 1)
-        macd_signal = st.slider("MACD Signal Period", 5, 15, int(os.getenv("MACD_SIGNAL", "9")), 1)
+        macd_fast = st.slider(
+            "MACD Fast Period", 
+            5, 20, 
+            st.session_state.settings_macd_fast, 
+            1,
+            key='settings_macd_fast'
+        )
+        macd_slow = st.slider(
+            "MACD Slow Period", 
+            20, 50, 
+            st.session_state.settings_macd_slow, 
+            1,
+            key='settings_macd_slow'
+        )
+        macd_signal = st.slider(
+            "MACD Signal Period", 
+            5, 15, 
+            st.session_state.settings_macd_signal, 
+            1,
+            key='settings_macd_signal'
+        )
     
     with col2:
         st.subheader("📊 Bollinger Bands")
-        bb_period = st.slider("BB Period", 10, 40, int(os.getenv("BB_PERIOD", "20")), 1)
-        bb_std = st.slider("BB Standard Deviation", 1.0, 3.0, float(os.getenv("BB_STD_DEV", "2.0")), 0.1)
+        bb_period = st.slider(
+            "BB Period", 
+            10, 40, 
+            st.session_state.settings_bb_period, 
+            1,
+            key='settings_bb_period'
+        )
+        bb_std = st.slider(
+            "BB Standard Deviation", 
+            1.0, 3.0, 
+            st.session_state.settings_bb_std, 
+            0.1,
+            key='settings_bb_std'
+        )
     
     col1, col2 = st.columns(2)
     
     with col1:
         st.subheader("🎯 Signal Confirmation")
-        signal_conf = st.slider("Required Signal Confirmations", 1, 4, int(os.getenv("SIGNAL_CONFIRMATION_COUNT", "2")), 1,
-                               help="How many indicators must align for a trade signal")
+        signal_conf = st.slider(
+            "Required Signal Confirmations", 
+            1, 4, 
+            st.session_state.settings_signal_confirmation, 
+            1,
+            help="How many indicators must align for a trade signal",
+            key='settings_signal_confirmation'
+        )
     
     with col2:
         st.info(f"ℹ️ Your strategy requires **{signal_conf} signal(s)** to align before trading")

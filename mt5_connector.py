@@ -308,13 +308,16 @@ def can_place_order(estimated_loss: float, max_pnl_percent: float = 0.75) -> dic
             - 'reason': str - reason if order cannot be placed
     """
     try:
+        from risk_management import get_max_positions_limit
+        
         positions = get_open_positions()
-        if len(positions) >= config.MAX_OPEN_POSITIONS:
+        max_positions = get_max_positions_limit()
+        if len(positions) >= max_positions:
             return {
                 'can_place': False,
                 'current_utilization': 100,
                 'projected_utilization': 100,
-                'reason': f'Max open positions reached ({len(positions)} >= {config.MAX_OPEN_POSITIONS})'
+                'reason': f'Max open positions reached ({len(positions)} >= {max_positions})'
             }
 
         constraint = check_pnl_constraint(max_pnl_percent)

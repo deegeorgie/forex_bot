@@ -1,6 +1,8 @@
 ﻿import streamlit as st
 import hashlib
 import json
+from risk_management import apply_session_filters
+from datetime import datetime
 
 # Simple credentials (you can also load from a file)
 VALID_CREDENTIALS = {
@@ -51,6 +53,38 @@ else:
             st.rerun()
     
     st.title("🏠 Forex Algo Trading Dashboard")
+    
+    # Current trading session indicator
+    try:
+        session_info = apply_session_filters(10)  # Base value doesn't matter for session info
+        session_name = session_info['session_name']
+        session_multiplier = session_info['session_multiplier']
+        is_weekend = session_info['is_weekend']
+        
+        # Color coding based on session
+        if is_weekend:
+            session_color = "⚫"  # Black for weekend
+            session_status = "CLOSED"
+        elif session_name == "London/NY Overlap":
+            session_color = "🟢"  # Green for high liquidity
+            session_status = "HIGH LIQUIDITY"
+        elif session_name in ["London Session", "New York Session"]:
+            session_color = "🟡"  # Yellow for good liquidity
+            session_status = "ACTIVE"
+        else:  # Asian Session
+            session_color = "🔴"  # Red for low liquidity
+            session_status = "LOW LIQUIDITY"
+            
+        st.markdown(f"""
+        <div style="background-color: #f0f2f6; padding: 10px; border-radius: 5px; margin-bottom: 10px;">
+            <strong>{session_color} Current Session: {session_name}</strong> | 
+            Status: {session_status} | 
+            Position Limit Multiplier: {session_multiplier:.1f}x
+        </div>
+        """, unsafe_allow_html=True)
+    except Exception as e:
+        st.warning(f"⚠️ Could not determine current trading session: {e}")
+    
     st.markdown(f"Welcome **{st.session_state.username}**")
     st.markdown("---")
 

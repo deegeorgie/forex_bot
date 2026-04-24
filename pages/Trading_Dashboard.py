@@ -3,6 +3,7 @@ import streamlit as st
 from mt5_connector import connect, place_order, get_account_balance, get_account_equity, calculate_lot_size, is_algorithmic_trading_enabled, get_open_positions, close_position, get_account_margin_info, get_available_symbols, check_pnl_constraint, can_place_order
 from data import get_data
 from strategy import compute_indicators, generate_signal, train_ml_model, load_ml_model
+from risk_management import get_max_positions_limit, apply_session_filters, get_session_aware_symbols, get_session_aware_max_positions
 import config
 import logging
 import pandas as pd
@@ -200,6 +201,101 @@ def generate_daily_summary(date_str):
         return None
 
 
+def perform_auto_close(open_positions, auto_close_loss_pct, balance):
+    """
+    Perform auto-close on losing positions based on loss percentage threshold.
+    
+    Args:
+        open_positions: List of open positions from MT5
+        auto_close_loss_pct: Loss percentage threshold for auto-closing
+        balance: Current account balance
+        
+    Returns:
+        Tuple: (closed_count, closed_details)
+    """
+    closed_count = 0
+    closed_details = []
+    
+    if not open_positions:
+        return 0, []
+    
+    for position in list(open_positions):
+        # Only consider losing positions
+        if position.profit >= 0:
+            continue
+        
+        # Calculate loss percentage relative to position entry value
+        # This is more meaningful than % of total balance
+        try:
+            # For forex: position entry value = volume (in lots) * entry price * 100000 (standard lot size)
+            position_entry_value = position.volume * position.price_open * 100000
+            
+            # Calculate loss as percentage of entry value
+            if position_entry_value > 0:
+                position_loss_pct = (abs(position.profit) / position_entry_value) * 100
+            else:
+                position_loss_pct = 0
+            
+            logging.info(f"Position {position.ticket} ({position.symbol}): Loss ${abs(position.profit):.2f} = {position_loss_pct:.2f}% of entry value. Threshold: {auto_close_loss_pct:.2f}%")
+            
+            # Close if loss exceeds threshold
+            if position_loss_pct >= auto_close_loss_pct:
+                logging.info(f"Auto-closing position {position.ticket}: Loss {position_loss_pct:.2f}% >= threshold {auto_close_loss_pct:.2f}%")
+                try:
+                    close_position(position)
+                    closed_count += 1
+                    
+                    closed_details.append({
+                        'ticket': position.ticket,
+                        'symbol': position.symbol,
+                        'loss': abs(position.profit),
+                        'loss_pct': position_loss_pct,
+                        'status': 'Closed'
+                    })
+                    
+                    # Log auto-closed position
+                    close_action = 'CLOSE-BUY' if position.type == mt5.ORDER_TYPE_BUY else 'CLOSE-SELL'
+                    trade_time = time.strftime('%H:%M:%S', time.localtime())
+                    log_auto_trade_to_file({
+                        'time': trade_time,
+                        'symbol': position.symbol,
+                        'signal': close_action,
+                        'lot': position.volume,
+                        'score': 0  # Auto-close has no score
+                    })
+                    
+                except Exception as e:
+                    logging.error(f"Failed to close position {position.ticket}: {e}")
+                    closed_details.append({
+                        'ticket': position.ticket,
+                        'symbol': position.symbol,
+                        'loss': abs(position.profit),
+                        'loss_pct': position_loss_pct,
+                        'status': f'Error: {str(e)}'
+                    })
+        
+        except Exception as e:
+            logging.error(f"Error processing position {position.ticket}: {e}")
+    
+    return closed_count, closed_details
+
+
+def display_auto_close_results(closed_count, closed_details):
+    """Display auto-close results in the UI."""
+    if closed_count == 0:
+        st.sidebar.info("✅ Auto-close check complete. No positions met the close criteria.")
+    else:
+        st.sidebar.success(f"✅ Auto-closed {closed_count} position(s)!")
+        
+        # Show details in expander
+        with st.sidebar.expander(f"📋 Details ({closed_count} closed)"):
+            for detail in closed_details:
+                if detail['status'] == 'Closed':
+                    st.write(f"✅ {detail['symbol']} (#{detail['ticket']}): Loss ${detail['loss']:.2f} ({detail['loss_pct']:.2f}%)")
+                else:
+                    st.warning(f"❌ {detail['symbol']} (#{detail['ticket']}): {detail['status']}")
+
+
 def main():
     """Main Streamlit page function."""
     import streamlit as st
@@ -209,6 +305,37 @@ def main():
     initialize_session_state_from_saved()
     
     st.title("📊 Forex Algo Trading Dashboard")
+    
+    # Current trading session indicator
+    try:
+        session_info = apply_session_filters(10)  # Base value doesn't matter for session info
+        session_name = session_info['session_name']
+        session_multiplier = session_info['session_multiplier']
+        is_weekend = session_info['is_weekend']
+        
+        # Color coding based on session
+        if is_weekend:
+            session_color = "⚫"  # Black for weekend
+            session_status = "CLOSED"
+        elif session_name == "London/NY Overlap":
+            session_color = "🟢"  # Green for high liquidity
+            session_status = "HIGH LIQUIDITY"
+        elif session_name in ["London Session", "New York Session"]:
+            session_color = "🟡"  # Yellow for good liquidity
+            session_status = "ACTIVE"
+        else:  # Asian Session
+            session_color = "🔴"  # Red for low liquidity
+            session_status = "LOW LIQUIDITY"
+            
+        st.markdown(f"""
+        <div style="background-color: #f0f2f6; padding: 10px; border-radius: 5px; margin-bottom: 10px;">
+            <strong>{session_color} Current Session: {session_name}</strong> | 
+            Status: {session_status} | 
+            Position Limit Multiplier: {session_multiplier:.1f}x
+        </div>
+        """, unsafe_allow_html=True)
+    except Exception as e:
+        st.warning(f"⚠️ Could not determine current trading session: {e}")
 
     # Sidebar controls
     st.sidebar.header("⚙️ Trading Controls")
@@ -217,6 +344,11 @@ def main():
     st.sidebar.subheader("🔄 Auto Refresh")
     auto_refresh = st.sidebar.checkbox("Enable Auto Refresh", value=st.session_state.get('auto_refresh', False), key='auto_refresh')
     refresh_interval = st.sidebar.slider("Refresh Interval (seconds)", 5, 60, st.session_state.get('refresh_interval', 10), disabled=not auto_refresh, key='refresh_interval')
+    
+    # Defensive check: Ensure auto_refresh is properly set (should always be True after widget creation)
+    if not isinstance(auto_refresh, bool):
+        auto_refresh = False
+        st.warning("⚠️ Auto-refresh widget returned invalid value, defaulting to disabled")
 
     # Manual refresh button
     if st.sidebar.button("🔄 Refresh Now"):
@@ -228,12 +360,11 @@ def main():
     # Track manual interaction so refresh does not interrupt button clicks
     if 'manual_action' not in st.session_state:
         st.session_state.manual_action = False
+    if 'processing_action' not in st.session_state:
+        st.session_state.processing_action = False
 
-    # Reset manual action flag after processing (allows auto-refresh to work again)
-    if st.session_state.manual_action:
-        # Add a small delay to prevent immediate refresh after manual action
-        time.sleep(1)
-        st.session_state.manual_action = False
+    # Note: Do NOT reset manual_action flag here - it needs to persist through the script
+    # until after all button actions have been processed (see end of main() function)
     
     # Initialize variables with defaults (in case of early exit or errors)
     trading_enabled = False
@@ -242,6 +373,10 @@ def main():
     margin_info = {'margin': 0.0, 'free_margin': 0.0, 'margin_level': 0.0}
     open_positions = []
     max_pnl_percent = 0.75
+    mt5_connection_successful = False
+    balance = 0
+    equity = 0
+    drawdown = 0
 
     if 'followed_symbol' not in st.session_state:
         st.session_state.followed_symbol = config.SYMBOL
@@ -265,7 +400,8 @@ def main():
     if enable_auto_close:
         st.sidebar.info(f"Auto-close is enabled. Losing positions at or above {auto_close_loss_pct:.1f}% loss will be closed.")
         if st.sidebar.button("Run Auto-Close Now"):
-            st.sidebar.success("✅ Auto-close request triggered. Reviewing positions...")
+            st.session_state.trigger_auto_close_now = True
+            st.rerun()
     else:
         st.sidebar.info("Auto-close is disabled. No losing positions will be auto-closed.")
 
@@ -281,6 +417,7 @@ def main():
         balance = get_account_balance()
         equity = get_account_equity()
         drawdown = (balance - equity) / balance if balance > 0 else 0
+        mt5_connection_successful = True
 
         st.sidebar.success("✅ MT5 Connected")
         st.sidebar.metric("Balance", f"${balance:.2f}")
@@ -330,9 +467,18 @@ def main():
         elif not paper_trading:
             st.sidebar.success("✅ MT5 Algo Trading is enabled for live execution.")
 
-        if len(open_positions) >= config.MAX_OPEN_POSITIONS:
+        max_positions_info = get_session_aware_max_positions()
+        max_positions = max_positions_info['final_max_positions']
+        current_positions = get_open_positions()
+        positions_count = len(current_positions)
+        
+        st.sidebar.markdown(f"""<div style="background-color: #f0f2f6; padding: 10px; border-radius: 5px; margin-bottom: 10px;">
+            <strong>📊 Position Limit:</strong> {positions_count}/{max_positions}<br>
+            <small>{max_positions_info['breakdown']}</small>
+        </div>""", unsafe_allow_html=True)
+        if len(open_positions) >= max_positions:
             trading_enabled = False
-            st.sidebar.error(f"❌ Max open positions reached ({len(open_positions)}/{config.MAX_OPEN_POSITIONS}). New trades are blocked.")
+            st.sidebar.error(f"❌ Max open positions reached ({len(open_positions)}/{max_positions}). New trades are blocked.")
 
         followed_symbol = st.session_state.get('followed_symbol', config.SYMBOL)
         symbol_info = mt5.symbol_info(followed_symbol)
@@ -346,45 +492,56 @@ def main():
         status_cols = st.sidebar.columns(3)
         status_cols[0].metric('Algo Trading', 'Enabled' if algo_trading_enabled else 'Disabled')
         status_cols[1].metric('Spread', f"{spread_pips:.2f} pips" if spread_pips is not None else 'N/A')
-        status_cols[2].metric('Position Limit', f"{len(open_positions)}/{config.MAX_OPEN_POSITIONS}")
+        status_cols[2].metric('Position Limit', f"{len(open_positions)}/{max_positions}")
 
         if spread_pips is not None and spread_pips > config.MAX_SPREAD_PIPS:
             st.sidebar.warning(f"⚠️ High spread on {followed_symbol}: {spread_pips:.2f} pips")
-        if len(open_positions) >= config.MAX_OPEN_POSITIONS:
+        if len(open_positions) >= max_positions:
             st.sidebar.warning('⚠️ Trading blocked until positions are reduced.')
 
         if enable_auto_close and open_positions:
-            for position in list(open_positions):
-                position_loss_pct = abs(position.profit) / balance * 100 if position.profit < 0 else 0
-                if position_loss_pct >= auto_close_loss_pct:
-                    try:
-                        close_position(position)
-                        st.sidebar.warning(f"⚠️ Auto-closed position {position.ticket} at {position_loss_pct:.2f}% loss.")
-                        # Log auto-closed position
-                        close_action = 'CLOSE-BUY' if position.type == mt5.ORDER_TYPE_BUY else 'CLOSE-SELL'
-                        trade_time = time.strftime('%H:%M:%S', time.localtime())
-                        log_auto_trade_to_file({
-                            'time': trade_time,
-                            'symbol': position.symbol,
-                            'signal': close_action,
-                            'lot': position.volume,
-                            'score': 0  # Auto-close has no score
-                        })
-                    except Exception as e:
-                        logging.error(f"Failed to close losing position {position.ticket}: {e}")
-
-            try:
-                open_positions = get_open_positions()
-            except Exception as e:
-                logging.error(f"Failed to refresh open positions after auto-close: {e}")
+            # Check if "Run Auto-Close Now" button was clicked or if we're in regular auto-close cycle
+            should_auto_close = enable_auto_close or st.session_state.get('trigger_auto_close_now', False)
+            
+            if should_auto_close:
+                closed_count, closed_details = perform_auto_close(open_positions, auto_close_loss_pct, balance)
+                
+                # Display results
+                display_auto_close_results(closed_count, closed_details)
+                
+                # Reset the trigger flag
+                if st.session_state.get('trigger_auto_close_now', False):
+                    st.session_state.trigger_auto_close_now = False
+                
+                # Refresh positions after auto-close
+                try:
+                    open_positions = get_open_positions()
+                except Exception as e:
+                    logging.error(f"Failed to refresh open positions after auto-close: {e}")
 
     except Exception as e:
         st.sidebar.error(f"❌ MT5 Connection Failed: {e}")
-        st.stop()
+        logging.error(f"MT5 connection error: {e}")
+        st.warning("⚠️ Trading Dashboard is running in limited mode - Account connection unavailable")
+        # Set defaults and continue instead of stopping
+        mt5_connection_successful = False
+        pnl_constraint = {
+            'within_limits': False,
+            'max_allowed_pnl': 0,
+            'current_pnl': 0,
+            'utilization_percent': 100,
+            'exceeded_by': 0
+        }
+        pnl_constraint_breached = True
 
-    # Check P/L constraint immediately after successful MT5 connection
-    pnl_constraint = check_pnl_constraint(max_pnl_percent)
-    pnl_constraint_breached = not pnl_constraint['within_limits']
+    # Check P/L constraint immediately after successful MT5 connection (only if connection succeeded)
+    if mt5_connection_successful:
+        try:
+            pnl_constraint = check_pnl_constraint(max_pnl_percent)
+            pnl_constraint_breached = not pnl_constraint['within_limits']
+        except Exception as e:
+            logging.error(f"Failed to check P/L constraint: {e}")
+            # Keep the default constraint set earlier
     
     # Update trading_enabled based on P/L constraint
     if pnl_constraint_breached:
@@ -394,7 +551,8 @@ def main():
     available_symbols = get_available_symbols() or config.AVAILABLE_SYMBOLS
     if not available_symbols:
         st.error("No symbols are available from MT5 or configuration.")
-        st.stop()
+        available_symbols = ["EURUSD"]  # Provide a fallback symbol
+        st.warning(f"Using fallback symbol: {available_symbols[0]}")
 
     default_symbol = st.session_state.get('followed_symbol', config.SYMBOL)
     selected_index = available_symbols.index(default_symbol) if default_symbol in available_symbols else 0
@@ -431,6 +589,19 @@ def main():
         else:
             st.sidebar.error("❌ Algorithmic trading disabled")
             st.sidebar.info("💡 Enable 'Algo Trading' button in MT5 terminal")
+
+    # Session-aware symbol filtering info
+    if config.ENABLE_SESSION_AWARE_TRADING:
+        session_info = apply_session_filters(10)
+        active_symbols = get_session_aware_symbols(available_symbols)
+        session_name = session_info['session_name']
+        is_weekend = session_info['is_weekend']
+        
+        if is_weekend:
+            st.sidebar.warning(f"🔴 {session_name} - All symbols available (low liquidity)")
+        else:
+            symbols_str = ", ".join(active_symbols)
+            st.sidebar.info(f"📍 {session_name}: {symbols_str}")
 
     # Risk management
     if use_risk_management:
@@ -487,10 +658,36 @@ def main():
         return [evaluate_symbol(symbol, timeframe, use_ml) for symbol in symbols]
 
     def get_auto_trade_candidate(ranked_watchlist):
-        """Return the strongest BUY/SELL candidate from the ranked watchlist."""
+        """Return the first BUY/SELL candidate from the ranked watchlist that passes spread check."""
+        skipped_symbols = []
         for item in ranked_watchlist:
             if item['signal'] in ["BUY", "SELL"] and item['score'] >= 2:
-                return item
+                # Check spread for this symbol
+                try:
+                    symbol_tick = mt5.symbol_info_tick(item['symbol'])
+                    symbol_info = mt5.symbol_info(item['symbol'])
+                    if symbol_info and symbol_tick:
+                        spread_pips = (symbol_tick.ask - symbol_tick.bid) / symbol_info.point
+                        if spread_pips <= config.MAX_SPREAD_PIPS:
+                            if skipped_symbols:
+                                logging.info(f"Selected {item['symbol']} for auto-trade (skipped {len(skipped_symbols)} due to high spread: {', '.join(skipped_symbols)})")
+                            return item
+                        else:
+                            skipped_symbols.append(f"{item['symbol']}({spread_pips:.1f}pips)")
+                            logging.debug(f"Skipping {item['symbol']} due to high spread: {spread_pips:.2f} pips (max: {config.MAX_SPREAD_PIPS})")
+                    else:
+                        # If we can't get spread info, assume it's tradable
+                        if skipped_symbols:
+                            logging.info(f"Selected {item['symbol']} for auto-trade (skipped {len(skipped_symbols)} due to high spread)")
+                        return item
+                except Exception as e:
+                    logging.warning(f"Failed to check spread for {item['symbol']}: {e}")
+                    # If spread check fails, still consider the candidate
+                    if skipped_symbols:
+                        logging.info(f"Selected {item['symbol']} for auto-trade (skipped {len(skipped_symbols)} due to high spread)")
+                    return item
+        if skipped_symbols:
+            logging.info(f"No eligible auto-trade candidates: all {len(skipped_symbols)} signals had high spreads: {', '.join(skipped_symbols)}")
         return None
 
     def execute_trade(action, symbol, lot, paper_trading):
@@ -498,24 +695,29 @@ def main():
         try:
             if paper_trading:
                 st.success(f"📝 Paper {action} order simulated - {lot} lots of {symbol}")
+                return True  # Paper trades always "succeed"
             else:
                 # Check if algorithmic trading is enabled
                 if not is_algorithmic_trading_enabled():
                     st.error("❌ Algorithmic trading is disabled in MetaTrader 5 terminal. Please enable the 'Algo Trading' button in MT5.")
                     st.info("💡 To enable algorithmic trading: Open MetaTrader 5 → Click the 'Algo Trading' button in the toolbar → Make sure it's green/active")
-                    return
+                    return False
 
                 if not paper_trading:
                     current_positions = get_open_positions()
-                    if len(current_positions) >= config.MAX_OPEN_POSITIONS:
-                        st.error(f"❌ Cannot execute order: max open positions reached ({len(current_positions)}/{config.MAX_OPEN_POSITIONS}).")
-                        return
+                    max_positions_info = get_session_aware_max_positions()
+                    max_positions_limit = max_positions_info['final_max_positions']
+                    if len(current_positions) >= max_positions_limit:
+                        st.error(f"❌ Cannot execute order: max open positions reached ({len(current_positions)}/{max_positions_limit}).")
+                        return False
 
                 order_type = mt5.ORDER_TYPE_BUY if action == "BUY" else mt5.ORDER_TYPE_SELL
                 place_order(symbol, lot, order_type, config.STOP_LOSS_PIPS, config.TAKE_PROFIT_PIPS)
                 st.success(f"✅ {action} order executed - {lot} lots of {symbol}")
+                return True  # Real trade succeeded
         except Exception as e:
             st.error(f"❌ Failed to execute {action} order: {e}")
+            return False  # Trade failed
 
     # Load and process data
     try:
@@ -523,7 +725,9 @@ def main():
         df = get_cached_indicators(df)
         signal = generate_signal(df, use_ml=use_ml_signals)
 
-        watchlist = scan_watchlist(available_symbols, timeframe, use_ml_signals)
+        # Apply session-aware filtering to focus on symbols with active trading sessions
+        session_filtered_symbols = get_session_aware_symbols(available_symbols)
+        watchlist = scan_watchlist(session_filtered_symbols, timeframe, use_ml_signals)
         # Filter out symbols with data errors
         valid_watchlist = [item for item in watchlist if item['error'] is None]
         ranked_watchlist = sorted(
@@ -590,28 +794,34 @@ def main():
                     if not order_check['can_place']:
                         st.sidebar.warning(f"⚠️ Auto trade blocked: {order_check['reason'][:100]}...")
                     else:
-                        st.session_state.last_auto_trade_time = current_time
-                        st.session_state.last_auto_trade_candidate = candidate_id
-
                         trade_time = time.strftime('%H:%M:%S', time.localtime(current_time))
                         st.sidebar.success(f"🤖 Auto {auto_candidate['signal']} executed for {auto_candidate['symbol']} at {trade_time}")
-                        execute_trade(auto_candidate['signal'], auto_candidate['symbol'], lot, paper_trading)
+                        trade_success = execute_trade(auto_candidate['signal'], auto_candidate['symbol'], lot, paper_trading)
 
-                        st.session_state.auto_trade_history.append({
-                            'time': trade_time,
-                            'signal': auto_candidate['signal'],
-                            'lot': lot,
-                            'symbol': auto_candidate['symbol'],
-                            'score': auto_candidate['score']
-                        })
+                        # Only update state and log if trade was actually successful
+                        if trade_success:
+                            st.session_state.last_auto_trade_time = current_time
+                            st.session_state.last_auto_trade_candidate = candidate_id
+                            
+                            st.session_state.auto_trade_history.append({
+                                'time': trade_time,
+                                'signal': auto_candidate['signal'],
+                                'lot': lot,
+                                'symbol': auto_candidate['symbol'],
+                                'score': auto_candidate['score']
+                            })
 
-                        # Log to daily file
-                        log_auto_trade_to_file(st.session_state.auto_trade_history[-1])
+                            # Log to daily file
+                            log_auto_trade_to_file(st.session_state.auto_trade_history[-1])
 
-                        if len(st.session_state.auto_trade_history) > 10:
-                            st.session_state.auto_trade_history = st.session_state.auto_trade_history[-10:]
+                            if len(st.session_state.auto_trade_history) > 10:
+                                st.session_state.auto_trade_history = st.session_state.auto_trade_history[-10:]
 
-                        logging.info(f"Auto trade executed: {auto_candidate['signal']} {lot} lots of {auto_candidate['symbol']} (score {auto_candidate['score']})")
+                            logging.info(f"Auto trade executed: {auto_candidate['signal']} {lot} lots of {auto_candidate['symbol']} (score {auto_candidate['score']})")
+                        else:
+                            logging.warning(f"Auto trade failed: {auto_candidate['signal']} {lot} lots of {auto_candidate['symbol']} (score {auto_candidate['score']})")
+        elif auto_trade and not auto_candidate and trading_enabled and not pnl_constraint_breached:
+            st.sidebar.info("🤔 No eligible auto-trade candidates found. All signals either have low scores or high spreads.")
         elif auto_trade and pnl_constraint_breached:
             st.sidebar.error("⚠️ Auto trading suspended - P/L limit exceeded")
         elif auto_trade and not trading_enabled:
@@ -620,7 +830,13 @@ def main():
     except Exception as e:
         st.error(f"❌ Failed to load data for {symbol}: {e}")
         st.info("💡 Try selecting a different symbol from the dropdown. Some symbols may not have historical data available.")
-        st.stop()
+        logging.error(f"Data loading error for {symbol}: {e}")
+        # Continue to show at least the risk dashboard instead of stopping completely
+        st.warning("⚠️ Dashboard is partially unavailable. Showing account status only.")
+        # Set defaults for display
+        signal = "ERROR"
+        df = pd.DataFrame()
+        ranked_watchlist = []
 
     # Risk dashboard
     position_count = len(open_positions) if 'open_positions' in locals() else 0
@@ -699,168 +915,179 @@ def main():
     col1, col2 = st.columns([2, 1])
 
     with col1:
-        signal_display = f"📈 {symbol} - {timeframe_label} | Signal: **{signal}**"
-        if signal_changed:
-            signal_display += " 🔔 **SIGNAL CHANGED!**"
-        st.subheader(signal_display)
+        if not df.empty:
+            signal_display = f"📈 {symbol} - {timeframe_label} | Signal: **{signal}**"
+            if signal_changed:
+                signal_display += " 🔔 **SIGNAL CHANGED!**"
+            st.subheader(signal_display)
 
-        # Price chart
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(x=df['time'], y=df['close'], name="Price", line=dict(color='blue')))
-        fig.add_trace(go.Scatter(x=df['time'], y=df['SMA_50'], name="SMA 50", line=dict(color='orange')))
-        fig.add_trace(go.Scatter(x=df['time'], y=df['SMA_200'], name="SMA 200", line=dict(color='red')))
-        fig.update_layout(title=f"{symbol} Price Chart", xaxis_title="Time", yaxis_title="Price")
-        st.plotly_chart(fig, use_container_width=True)
+            # Price chart
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=df['time'], y=df['close'], name="Price", line=dict(color='blue')))
+            fig.add_trace(go.Scatter(x=df['time'], y=df['SMA_50'], name="SMA 50", line=dict(color='orange')))
+            fig.add_trace(go.Scatter(x=df['time'], y=df['SMA_200'], name="SMA 200", line=dict(color='red')))
+            fig.update_layout(title=f"{symbol} Price Chart", xaxis_title="Time", yaxis_title="Price")
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.warning(f"📊 Unable to display chart - No data available for {symbol}")
 
     with col2:
-        # Trading buttons
-        st.subheader("🎯 Quick Trade")
-        
-        # Show P/L constraint status for trading buttons
-        if pnl_constraint_breached:
-            st.error("🔴 **Trading BLOCKED** - P/L Limit Exceeded")
-            st.info(f"Current P/L (${abs(pnl_constraint['current_pnl']):.2f}) exceeds 75% of Free Margin (${pnl_constraint['max_allowed_pnl']:.2f})")
-        elif pnl_constraint['utilization_percent'] > 80:
-            st.warning(f"⚠️ **High P/L Usage** - {pnl_constraint['utilization_percent']:.1f}% of limit. Proceed with caution.")
-        
-        # Estimate loss for new position (stop loss pips * lot size)
-        symbol_info = mt5.symbol_info(symbol)
-        symbol_tick = mt5.symbol_info_tick(symbol)
-        if symbol_info and symbol_tick:
-            pip_value = 10 ** (1 - symbol_info.digits)
-            estimated_loss = config.STOP_LOSS_PIPS * pip_value * lot
-            spread_pips = (symbol_tick.ask - symbol_tick.bid) / symbol_info.point
-            if spread_pips > config.MAX_SPREAD_PIPS:
-                st.warning(f"⚠️ High spread for {symbol}: {spread_pips:.1f} pips. Live orders may be expensive or blocked.")
-        else:
-            estimated_loss = 500 * lot  # Conservative default estimate
-
-        if st.button("🟢 BUY", type="primary", disabled=not trading_enabled):
-            st.session_state.manual_action = True
+        if not df.empty:
+            # Trading buttons
+            st.subheader("🎯 Quick Trade")
             
-            # Check P/L constraint before executing
-            order_check = can_place_order(estimated_loss, max_pnl_percent)
-            if not order_check['can_place']:
-                st.error(f"❌ Cannot place BUY order: {order_check['reason']}")
-            else:
-                execute_trade("BUY", symbol, lot, paper_trading)
-                # Log manual trade
-                trade_time = time.strftime('%H:%M:%S', time.localtime())
-                log_auto_trade_to_file({
-                    'time': trade_time,
-                    'symbol': symbol,
-                    'signal': 'BUY',
-                    'lot': lot,
-                    'score': 0  # Manual trades have no score
-                })
-
-        if st.button("🔴 SELL", type="secondary", disabled=not trading_enabled):
-            st.session_state.manual_action = True
+            # Show P/L constraint status for trading buttons
+            if pnl_constraint_breached:
+                st.error("🔴 **Trading BLOCKED** - P/L Limit Exceeded")
+                st.info(f"Current P/L (${abs(pnl_constraint['current_pnl']):.2f}) exceeds 75% of Free Margin (${pnl_constraint['max_allowed_pnl']:.2f})")
+            elif pnl_constraint['utilization_percent'] > 80:
+                st.warning(f"⚠️ **High P/L Usage** - {pnl_constraint['utilization_percent']:.1f}% of limit. Proceed with caution.")
             
-            # Check P/L constraint before executing
-            order_check = can_place_order(estimated_loss, max_pnl_percent)
-            if not order_check['can_place']:
-                st.error(f"❌ Cannot place SELL order: {order_check['reason']}")
+            # Estimate loss for new position (stop loss pips * lot size)
+            symbol_info = mt5.symbol_info(symbol)
+            symbol_tick = mt5.symbol_info_tick(symbol)
+            if symbol_info and symbol_tick:
+                pip_value = 10 ** (1 - symbol_info.digits)
+                estimated_loss = config.STOP_LOSS_PIPS * pip_value * lot
+                spread_pips = (symbol_tick.ask - symbol_tick.bid) / symbol_info.point
+                if spread_pips > config.MAX_SPREAD_PIPS:
+                    st.warning(f"⚠️ High spread for {symbol}: {spread_pips:.1f} pips. Live orders may be expensive or blocked.")
             else:
-                execute_trade("SELL", symbol, lot, paper_trading)
-                # Log manual trade
-                trade_time = time.strftime('%H:%M:%S', time.localtime())
-                log_auto_trade_to_file({
-                    'time': trade_time,
-                    'symbol': symbol,
-                    'signal': 'SELL',
-                    'lot': lot,
-                    'score': 0  # Manual trades have no score
-                })
+                estimated_loss = 500 * lot  # Conservative default estimate
 
-        st.subheader("📡 Watchlist Summary")
-        if top_watchlist:
-            for item in top_watchlist:
-                status = 'BUY' if item['signal'] == 'BUY' else 'SELL' if item['signal'] == 'SELL' else 'HOLD'
-                st.write(f"**{item['symbol']}** — {status} — score {item['score']}")
-        else:
-            st.write("No strong watchlist signals right now.")
+            if st.button("🟢 BUY", type="primary", disabled=not trading_enabled):
+                st.session_state.manual_action = True
+                
+                # Check P/L constraint before executing
+                order_check = can_place_order(estimated_loss, max_pnl_percent)
+                if not order_check['can_place']:
+                    st.error(f"❌ Cannot place BUY order: {order_check['reason']}")
+                else:
+                    trade_success = execute_trade("BUY", symbol, lot, paper_trading)
+                    # Only log if trade was actually successful
+                    if trade_success:
+                        trade_time = time.strftime('%H:%M:%S', time.localtime())
+                        log_auto_trade_to_file({
+                            'time': trade_time,
+                            'symbol': symbol,
+                            'signal': 'BUY',
+                            'lot': lot,
+                            'score': 0  # Manual trades have no score
+                        })
 
-        # Signal indicator
-        st.subheader("📊 Current Signal")
-        if signal == "BUY":
-            if signal_changed:
-                st.success("🟢 BUY SIGNAL 🔔 **NEW!**")
+            if st.button("🔴 SELL", type="secondary", disabled=not trading_enabled):
+                st.session_state.manual_action = True
+                
+                # Check P/L constraint before executing
+                order_check = can_place_order(estimated_loss, max_pnl_percent)
+                if not order_check['can_place']:
+                    st.error(f"❌ Cannot place SELL order: {order_check['reason']}")
+                else:
+                    trade_success = execute_trade("SELL", symbol, lot, paper_trading)
+                    # Only log if trade was actually successful
+                    if trade_success:
+                        trade_time = time.strftime('%H:%M:%S', time.localtime())
+                        log_auto_trade_to_file({
+                            'time': trade_time,
+                            'symbol': symbol,
+                            'signal': 'SELL',
+                            'lot': lot,
+                            'score': 0  # Manual trades have no score
+                        })
+
+            st.subheader("📡 Watchlist Summary")
+            if top_watchlist:
+                for item in top_watchlist:
+                    status = 'BUY' if item['signal'] == 'BUY' else 'SELL' if item['signal'] == 'SELL' else 'HOLD'
+                    st.write(f"**{item['symbol']}** — {status} — score {item['score']}")
             else:
-                st.success("🟢 BUY SIGNAL")
-        elif signal == "SELL":
-            if signal_changed:
-                st.error("🔴 SELL SIGNAL 🔔 **NEW!**")
+                st.write("No strong watchlist signals right now.")
+
+            # Signal indicator
+            st.subheader("📊 Current Signal")
+            if signal == "BUY":
+                if signal_changed:
+                    st.success("🟢 BUY SIGNAL 🔔 **NEW!**")
+                else:
+                    st.success("🟢 BUY SIGNAL")
+            elif signal == "SELL":
+                if signal_changed:
+                    st.error("🔴 SELL SIGNAL 🔔 **NEW!**")
+                else:
+                    st.error("🔴 SELL SIGNAL")
             else:
-                st.error("🔴 SELL SIGNAL")
+                if signal_changed:
+                    st.warning("🟡 HOLD SIGNAL 🔔 **CHANGED!**")
+                else:
+                    st.warning("🟡 HOLD SIGNAL")
         else:
-            if signal_changed:
-                st.warning("🟡 HOLD SIGNAL 🔔 **CHANGED!**")
-            else:
-                st.warning("🟡 HOLD SIGNAL")
+            st.info("📊 Trading controls unavailable - Please wait for data to load or select a different symbol")
 
     # Technical indicators charts
-    st.header("📊 Technical Analysis")
+    if not df.empty:
+        st.header("📊 Technical Analysis")
 
-    tab1, tab2, tab3 = st.tabs(["RSI", "MACD", "Bollinger Bands"])
+        tab1, tab2, tab3 = st.tabs(["RSI", "MACD", "Bollinger Bands"])
 
-    with tab1:
-        fig_rsi = go.Figure()
-        fig_rsi.add_trace(go.Scatter(x=df['time'], y=df['RSI'], name="RSI", line=dict(color='purple')))
-        fig_rsi.add_hline(y=70, line_dash="dash", annotation_text="Overbought")
-        fig_rsi.add_hline(y=30, line_dash="dash", annotation_text="Oversold")
-        fig_rsi.update_layout(title="RSI Indicator", xaxis_title="Time", yaxis_title="RSI")
-        st.plotly_chart(fig_rsi, use_container_width=True)
+        with tab1:
+            fig_rsi = go.Figure()
+            fig_rsi.add_trace(go.Scatter(x=df['time'], y=df['RSI'], name="RSI", line=dict(color='purple')))
+            fig_rsi.add_hline(y=70, line_dash="dash", annotation_text="Overbought")
+            fig_rsi.add_hline(y=30, line_dash="dash", annotation_text="Oversold")
+            fig_rsi.update_layout(title="RSI Indicator", xaxis_title="Time", yaxis_title="RSI")
+            st.plotly_chart(fig_rsi, use_container_width=True)
 
-    with tab2:
-        fig_macd = go.Figure()
-        fig_macd.add_trace(go.Scatter(x=df['time'], y=df['MACD'], name="MACD", line=dict(color='blue')))
-        fig_macd.add_trace(go.Scatter(x=df['time'], y=df['MACD_signal'], name="Signal", line=dict(color='red')))
-        fig_macd.add_trace(go.Bar(x=df['time'], y=df['MACD_histogram'], name="Histogram"))
-        fig_macd.add_trace(go.Scatter(x=df['time'], y=df['MACD'], name="MACD", line=dict(color='blue')))
-        fig_macd.add_trace(go.Scatter(x=df['time'], y=df['MACD_signal'], name="Signal", line=dict(color='red')))
-        fig_macd.add_trace(go.Bar(x=df['time'], y=df['MACD_histogram'], name="Histogram"))
-        fig_macd.update_layout(title="MACD Indicator", xaxis_title="Time", yaxis_title="MACD")
-        st.plotly_chart(fig_macd, use_container_width=True)
+        with tab2:
+            fig_macd = go.Figure()
+            fig_macd.add_trace(go.Scatter(x=df['time'], y=df['MACD'], name="MACD", line=dict(color='blue')))
+            fig_macd.add_trace(go.Scatter(x=df['time'], y=df['MACD_signal'], name="Signal", line=dict(color='red')))
+            fig_macd.add_trace(go.Bar(x=df['time'], y=df['MACD_histogram'], name="Histogram"))
+            fig_macd.add_trace(go.Scatter(x=df['time'], y=df['MACD'], name="MACD", line=dict(color='blue')))
+            fig_macd.add_trace(go.Scatter(x=df['time'], y=df['MACD_signal'], name="Signal", line=dict(color='red')))
+            fig_macd.add_trace(go.Bar(x=df['time'], y=df['MACD_histogram'], name="Histogram"))
+            fig_macd.update_layout(title="MACD Indicator", xaxis_title="Time", yaxis_title="MACD")
+            st.plotly_chart(fig_macd, use_container_width=True)
 
-    with tab3:
-        fig_bb = go.Figure()
-        fig_bb.add_trace(go.Scatter(x=df['time'], y=df['close'], name="Price", line=dict(color='blue')))
-        fig_bb.add_trace(go.Scatter(x=df['time'], y=df['BB_upper'], name="BB Upper", line=dict(color='red', dash='dash')))
-        fig_bb.add_trace(go.Scatter(x=df['time'], y=df['BB_middle'], name="BB Middle", line=dict(color='orange', dash='dot')))
-        fig_bb.add_trace(go.Scatter(x=df['time'], y=df['BB_lower'], name="BB Lower", line=dict(color='green', dash='dash')))
-        fig_bb.update_layout(title="Bollinger Bands", xaxis_title="Time", yaxis_title="Price")
-        st.plotly_chart(fig_bb, use_container_width=True)
+        with tab3:
+            fig_bb = go.Figure()
+            fig_bb.add_trace(go.Scatter(x=df['time'], y=df['close'], name="Price", line=dict(color='blue')))
+            fig_bb.add_trace(go.Scatter(x=df['time'], y=df['BB_upper'], name="BB Upper", line=dict(color='red', dash='dash')))
+            fig_bb.add_trace(go.Scatter(x=df['time'], y=df['BB_middle'], name="BB Middle", line=dict(color='orange', dash='dot')))
+            fig_bb.add_trace(go.Scatter(x=df['time'], y=df['BB_lower'], name="BB Lower", line=dict(color='green', dash='dash')))
+            fig_bb.update_layout(title="Bollinger Bands", xaxis_title="Time", yaxis_title="Price")
+            st.plotly_chart(fig_bb, use_container_width=True)
 
-    # ML Model section
-    st.header("🤖 Machine Learning Model")
+        # ML Model section
+        st.header("🤖 Machine Learning Model")
 
-    col1, col2 = st.columns(2)
+        col1, col2 = st.columns(2)
 
-    with col1:
-        if st.button("🧠 Train ML Model"):
-            st.session_state.manual_action = True
-            with st.spinner("Training ML model..."):
-                result = train_ml_model(df)
+        with col1:
+            if st.button("🧠 Train ML Model"):
+                st.session_state.manual_action = True
+                with st.spinner("Training ML model..."):
+                    result = train_ml_model(df)
 
-            if result is not None:
-                st.success("✅ ML model trained successfully!")
-            else:
-                df_ml = df.dropna()
-                if len(df_ml) < 200:
-                    st.warning("⚠️ Not enough data for training. Need at least 200 data points after indicator calculation.")
-                    st.info(f"Data rows available after dropna: {len(df_ml)}")
+                if result is not None:
+                    st.success("✅ ML model trained successfully!")
                 else:
-                    st.error("❌ Training failed. Check the server logs or model code for errors.")
+                    df_ml = df.dropna()
+                    if len(df_ml) < 200:
+                        st.warning("⚠️ Not enough data for training. Need at least 200 data points after indicator calculation.")
+                        st.info(f"Data rows available after dropna: {len(df_ml)}")
+                    else:
+                        st.error("❌ Training failed. Check the server logs or model code for errors.")
 
-    with col2:
-        if st.button("🔍 Check ML Status"):
-            st.session_state.manual_action = True
-            model, scaler = load_ml_model()
-            if model:
-                st.success("✅ ML model is loaded and ready!")
-            else:
-                st.warning("⚠️ No trained ML model found.")
+        with col2:
+            if st.button("🔍 Check ML Status"):
+                st.session_state.manual_action = True
+                model, scaler = load_ml_model()
+                if model:
+                    st.success("✅ ML model is loaded and ready!")
+                else:
+                    st.warning("⚠️ No trained ML model found.")
+    else:
+        st.info("📊 Technical analysis charts and ML models will be available once data loads successfully.")
 
     # Auto Trading History
     if auto_trade and 'auto_trade_history' in st.session_state and st.session_state.auto_trade_history:
@@ -1014,11 +1241,20 @@ def main():
         else:
             st.warning("No trading logs found.")
 
+    # Reset manual action flag AFTER all button actions have completed
+    # This prevents auto-refresh from interrupting button clicks
+    if st.session_state.manual_action:
+        time.sleep(0.5)  # Small delay to ensure actions complete
+        st.session_state.manual_action = False
+        logging.debug("Manual action completed, flag reset")
+
     # Auto-refresh logic (run only when no manual action occurred)
+    # Only trigger rerun if auto_refresh is enabled AND sufficient time has passed
     if auto_refresh and not st.session_state.manual_action:
         current_time = time.time()
         if current_time - st.session_state.last_refresh >= refresh_interval:
             st.session_state.last_refresh = current_time
+            logging.debug(f"Auto-refresh triggered (interval: {refresh_interval}s)")
             st.rerun()
     
     # Final state sync before app exits/reruns
