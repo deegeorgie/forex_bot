@@ -1,0 +1,5 @@
+timestamp,date,time,symbol,signal,lot_size,score,account_balance,account_equity,margin_info
+2026-04-24 15:24:39,2026-04-24,15:24:39,USDCAD,BUY,0.1,4,97764.59,98207.93,"{'margin': 2906.26, 'free_margin': 95301.67, 'margin_level': 3379.1859640913062}"
+2026-04-24 15:40:08,2026-04-24,15:40:08,USDJPY,BUY,0.1,4,97764.59,98183.25,"{'margin': 3006.26, 'free_margin': 95176.99, 'margin_level': 3265.960030070586}"
+2026-04-24 15:55:59,2026-04-24,15:55:59,ZARJPY,BUY,0.1,3,97764.59,98142.62,"{'margin': 3106.26, 'free_margin': 95036.36, 'margin_level': 3159.5107943314465}"
+2026-04-24 16:26:38,2026-04-24,16:26:37,NOKJPY,BUY,0.1,3,97764.59,98132.05,"{'margin': 3106.31, 'free_margin': 95025.74, 'margin_level': 3159.119662879751}"

@@ -359,70 +359,81 @@ def can_place_order(estimated_loss: float, max_pnl_percent: float = 0.75) -> dic
         }
 
 
-def close_position(position, deviation: int = 10):
+def close_position(position, deviation: int = 20):
     """Close an open position using the current market price."""
     try:
+        # Check MT5 connection
+        if not mt5.initialize():
+            raise Exception("MT5 not initialized")
+        
         symbol = position.symbol
         volume = position.volume
+        ticket = position.ticket
+        
+        # Determine opposite order type to close the position
         order_type = mt5.ORDER_TYPE_SELL if position.type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY
+        
+        # Get current market price
         tick = mt5.symbol_info_tick(symbol)
         if tick is None:
-            raise Exception(f"Failed to get tick for {symbol}")
-
+            raise Exception(f"Failed to get tick for {symbol}. Symbol might not exist or be tradeable.")
+        
+        # Select correct price: bid for sell, ask for buy
         price = tick.bid if order_type == mt5.ORDER_TYPE_SELL else tick.ask
         
-        # Create base request without filling mode
+        # Ensure symbol is selected for trading
+        symbol_info = mt5.symbol_info(symbol)
+        if symbol_info is None:
+            raise Exception(f"Symbol {symbol} not found in broker's symbol list")
+        
+        if not symbol_info.visible:
+            logging.warning(f"Symbol {symbol} not visible, attempting to select...")
+            if not mt5.symbol_select(symbol, True):
+                logging.warning(f"Could not select {symbol}, continuing anyway...")
+        
+        # Create close request
+        # NOTE: For closing orders, we DON'T use type_time or type_filling
+        # The broker decides the filling mode based on their settings
         request = {
             'action': mt5.TRADE_ACTION_DEAL,
             'symbol': symbol,
             'volume': volume,
             'type': order_type,
-            'position': position.ticket,
+            'position': ticket,
             'price': price,
             'deviation': deviation,
-            'magic': 123456,
-            'comment': 'auto_close',
-            'type_time': mt5.ORDER_TIME_GTC,
+            'comment': 'position_close',
         }
         
-        # Try basic close first
+        logging.info(f"Sending close request: ticket={ticket}, symbol={symbol}, type={'SELL' if order_type == mt5.ORDER_TYPE_SELL else 'BUY'}, volume={volume}, price={price}")
+        
+        # Send the close order
         result = mt5.order_send(request)
         
-        # If basic close fails, try with different filling modes
-        if result.retcode != mt5.TRADE_RETCODE_DONE:
-            filling_modes_to_try = [
-                mt5.ORDER_FILLING_RETURN,  # Most brokers support this
-                mt5.ORDER_FILLING_IOC,     # Immediate or Cancel
-                mt5.ORDER_FILLING_FOK      # Fill or Kill
-            ]
-            
-            for filling_mode in filling_modes_to_try:
-                request_with_filling = {
-                    'action': mt5.TRADE_ACTION_DEAL,
-                    'symbol': symbol,
-                    'volume': volume,
-                    'type': order_type,
-                    'position': position.ticket,
-                    'price': price,
-                    'deviation': deviation,
-                    'magic': 123456,
-                    'comment': 'auto_close',
-                    'type_time': mt5.ORDER_TIME_GTC,
-                    'type_filling': filling_mode,
-                }
-                
-                result = mt5.order_send(request_with_filling)
-                if result.retcode == mt5.TRADE_RETCODE_DONE:
-                    logging.info(f"Position closed with filling mode: {filling_mode}")
-                    break
-                else:
-                    logging.warning(f"Filling mode {filling_mode} failed for close: {result.comment}")
+        if result is None:
+            raise Exception("order_send returned None - MT5 connection might be lost")
         
-        if result.retcode != mt5.TRADE_RETCODE_DONE:
-            raise Exception(f"Close failed: {result.comment}")
-
-        logging.info(f"Position closed: ticket {position.ticket}, symbol {symbol}, volume {volume}")
-        return result
+        if result.retcode == mt5.TRADE_RETCODE_DONE:
+            logging.info(f"✅ Position closed successfully: ticket {ticket}, symbol {symbol}, volume {volume}")
+            return result
+        
+        # If failed, log detailed error and try market order with highest deviation
+        logging.warning(f"Close attempt failed with retcode {result.retcode}: {result.comment}")
+        
+        # Try again with higher deviation (more aggressive fill)
+        if result.retcode in [mt5.TRADE_RETCODE_PRICE_OFF, mt5.TRADE_RETCODE_REQUOTE]:
+            logging.info(f"Retrying with higher deviation (50)...")
+            request['deviation'] = 50
+            result = mt5.order_send(request)
+            
+            if result.retcode == mt5.TRADE_RETCODE_DONE:
+                logging.info(f"✅ Position closed on retry: ticket {ticket}")
+                return result
+            else:
+                raise Exception(f"Close failed even with high deviation: {result.comment} (retcode: {result.retcode})")
+        else:
+            raise Exception(f"Close failed: {result.comment} (retcode: {result.retcode})")
+    
     except Exception as e:
-        logging.error(f"Failed to close position: {e}")
+        logging.error(f"❌ Failed to close position {position.ticket}: {e}")
         raise

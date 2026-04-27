@@ -26,9 +26,8 @@ SYMBOL_SESSION_MAP = {
 }
 
 # Enable session-aware trading (only trade symbols when they're in active sessions)
-# TEMPORARY: Disabled to allow existing 40 positions to continue trading
-# TODO: Re-enable after reducing to ~15-20 positions
-ENABLE_SESSION_AWARE_TRADING = os.getenv("ENABLE_SESSION_AWARE_TRADING", "false").lower() == "true"
+# ✅ RE-ENABLED after reducing positions from 40 to 8
+ENABLE_SESSION_AWARE_TRADING = os.getenv("ENABLE_SESSION_AWARE_TRADING", "true").lower() == "true"
 
 # Strategy Configuration - Adjustable Parameters
 RSI_PERIOD = int(os.getenv("RSI_PERIOD", "14"))
@@ -44,9 +43,8 @@ SMA_LONG = int(os.getenv("SMA_LONG", "200"))
 SIGNAL_CONFIRMATION_COUNT = int(os.getenv("SIGNAL_CONFIRMATION_COUNT", "2"))  # Require N signals to align
 
 # Risk and execution controls
-# TEMPORARY: Increased from 50 to 60 to accommodate existing 40 positions
-# TODO: Reduce back to 50 after closing ~20 positions
-MAX_OPEN_POSITIONS = int(os.getenv("MAX_OPEN_POSITIONS", "60"))
+# ✅ RESTORED from 60 to 50 after closing 32 positions (40 → 8)
+MAX_OPEN_POSITIONS = int(os.getenv("MAX_OPEN_POSITIONS", "50"))
 MAX_SPREAD_PIPS = float(os.getenv("MAX_SPREAD_PIPS", "3.0"))
 MAX_SLIPPAGE_PIPS = float(os.getenv("MAX_SLIPPAGE_PIPS", "3.0"))
 BACKTEST_SPREAD_PIPS = float(os.getenv("BACKTEST_SPREAD_PIPS", "0.5"))

@@ -548,7 +548,8 @@ def main():
         trading_enabled = False
 
     # Trading parameters
-    available_symbols = get_available_symbols() or config.AVAILABLE_SYMBOLS
+    # Use configured symbols first (no MT5 call needed), only fetch from MT5 if unavailable
+    available_symbols = config.AVAILABLE_SYMBOLS or get_available_symbols()
     if not available_symbols:
         st.error("No symbols are available from MT5 or configuration.")
         available_symbols = ["EURUSD"]  # Provide a fallback symbol
@@ -725,7 +726,8 @@ def main():
         df = get_cached_indicators(df)
         signal = generate_signal(df, use_ml=use_ml_signals)
 
-        # Apply session-aware filtering to focus on symbols with active trading sessions
+        # Watchlist uses AVAILABLE_SYMBOLS (configured symbols) for efficiency
+        # No additional MT5 calls - just session filtering of already-configured symbols
         session_filtered_symbols = get_session_aware_symbols(available_symbols)
         watchlist = scan_watchlist(session_filtered_symbols, timeframe, use_ml_signals)
         # Filter out symbols with data errors
